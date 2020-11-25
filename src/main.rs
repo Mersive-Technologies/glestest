@@ -1,5 +1,5 @@
 use khronos_egl::{choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, initialize, make_current, NO_CONTEXT};
-use rs_gles3::{glGenBuffers, GLuint, glGenVertexArrays, glBindVertexArray, glBindBuffer, GL_ARRAY_BUFFER, glBufferData, GL_STATIC_DRAW, glEnableVertexAttribArray, glVertexAttribPointer, GL_FLOAT, GL_FALSE, GLfloat, glClear, GL_COLOR_BUFFER_BIT, GLenum, GLint, glCreateShader, glShaderSource, glCompileShader, glGetShaderiv, GL_COMPILE_STATUS, glDeleteShader, GLchar, GL_VERTEX_SHADER, GL_FRAGMENT_SHADER, glCreateProgram, glAttachShader, glLinkProgram, glGetProgramiv, GL_LINK_STATUS, glDeleteProgram, glDetachShader, glGetError, GL_INVALID_ENUM, GL_INVALID_VALUE, GL_INVALID_OPERATION, GL_OUT_OF_MEMORY, GL_INVALID_FRAMEBUFFER_OPERATION};
+use rs_gles3::{glGenBuffers, GLuint, glGenVertexArrays, glBindVertexArray, glBindBuffer, GL_ARRAY_BUFFER, glBufferData, GL_STATIC_DRAW, glEnableVertexAttribArray, glVertexAttribPointer, GL_FLOAT, GL_FALSE, GLfloat, glClear, GL_COLOR_BUFFER_BIT, GLenum, GLint, glCreateShader, glShaderSource, glCompileShader, glGetShaderiv, GL_COMPILE_STATUS, glDeleteShader, GLchar, GL_VERTEX_SHADER, GL_FRAGMENT_SHADER, glCreateProgram, glAttachShader, glLinkProgram, glGetProgramiv, GL_LINK_STATUS, glDeleteProgram, glDetachShader, glGetError, GL_INVALID_ENUM, GL_INVALID_VALUE, GL_INVALID_OPERATION, GL_OUT_OF_MEMORY, GL_INVALID_FRAMEBUFFER_OPERATION, GL_ELEMENT_ARRAY_BUFFER};
 use std::ptr::null;
 use std::ffi::c_void;
 use anyhow::{anyhow, Context, Error};
@@ -19,42 +19,6 @@ fn main() -> Result<(), Error> {
         make_current(display, None, None, Some(ctx)).expect("Can't make current");
 
         // https://github.com/AlexCharlton/hello-modern-opengl/blob/master/hello-gl.c
-        let mut vertex_buffer_data = [
-            -1.0f32, -1.0f32, -1.0f32, 0.0f32, 0.0f32, 1.0f32,
-            1.0f32, -1.0f32, -1.0f32, 0.0f32, 1.0f32, 0.0f32,
-            1.0f32,  1.0f32, -1.0f32, 1.0f32, 0.0f32, 0.0f32
-        ];
-
-        let mut vertex_array_id: GLuint = 0;
-        glGenVertexArrays(1, &mut vertex_array_id);
-        if vertex_array_id == 0 { panic!("Invalid vertex array!"); }
-
-        let mut vertex_buffer: GLuint = 0;
-        glGenBuffers(1, &mut vertex_buffer);
-        if vertex_buffer == 0 { panic!("Invalid vertex buffer!"); }
-
-        let mut index_buffer: GLuint = 0;
-        glGenBuffers(1, &mut index_buffer);
-        if index_buffer == 0 { panic!("Invalid index buffer!"); }
-
-        glBindVertexArray(vertex_array_id);
-
-        glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
-        check_error().context("Cannot bind buffer!")?;
-        glBufferData(GL_ARRAY_BUFFER, (vertex_buffer_data.len() * 4usize) as i64, vertex_buffer_data.as_mut_ptr() as *const c_void, GL_STATIC_DRAW);
-        check_error().context("Cannot set buffer data")?;
-
-        glEnableVertexAttribArray(0); // 262
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE as u8, 24, null());
-        check_error().context("Cannot set vertex attrib pointer")?;
-
-        glEnableVertexAttribArray(1);
-        check_error().context("Cannot enable vertex attrib array")?;
-
-        let num = 12;
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE as u8, 24, num as *const c_void);
-        check_error().context("Cannot set vertex attrib pointer 2")?;
-
         let vert_shader = "\
 #version 300 es\n\
 in vec3 vertex;\n\
@@ -75,7 +39,46 @@ void main(){\n\
 }\0";
 
         let program_id = make_shader(vert_shader, frag_shader)?;
-        
+
+        let mut vertex_buffer_data = [
+            -1.0f32, -1.0f32, -1.0f32, 0.0f32, 0.0f32, 1.0f32,
+            1.0f32, -1.0f32, -1.0f32, 0.0f32, 1.0f32, 0.0f32,
+            1.0f32,  1.0f32, -1.0f32, 1.0f32, 0.0f32, 0.0f32
+        ];
+
+        // 250
+        let mut vertex_array_id: GLuint = 0;
+        glGenVertexArrays(1, &mut vertex_array_id);
+        if vertex_array_id == 0 { panic!("Invalid vertex array!"); }
+        let mut vertex_buffer: GLuint = 0;
+        glGenBuffers(1, &mut vertex_buffer);
+        if vertex_buffer == 0 { panic!("Invalid vertex buffer!"); }
+        let mut index_buffer: GLuint = 0;
+        glGenBuffers(1, &mut index_buffer);
+        if index_buffer == 0 { panic!("Invalid index buffer!"); }
+
+        // 257
+        glBindVertexArray(vertex_array_id);
+        glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
+        check_error().context("Cannot bind buffer!")?;
+        glBufferData(GL_ARRAY_BUFFER, (vertex_buffer_data.len() * 4) as i64, vertex_buffer_data.as_ptr() as *const c_void, GL_STATIC_DRAW);
+        check_error().context("Cannot set buffer data")?;
+
+        // 261
+        glEnableVertexAttribArray(0); // 262
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE as u8, 24, null());
+        check_error().context("Cannot set vertex attrib pointer")?;
+        glEnableVertexAttribArray(1);
+        check_error().context("Cannot enable vertex attrib array")?;
+        let num = 12;
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE as u8, 24, num as *const c_void);
+        check_error().context("Cannot set vertex attrib pointer 2")?;
+
+        // 267
+        let index_buffer_data = [0u16, 1u16, 2u16 ];
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, (index_buffer_data.len() * 2) as i64, index_buffer_data.as_ptr() as *const c_void, GL_STATIC_DRAW);
+        check_error().context("Cannot bind index buffer")?;
     }
 
     Ok(())
