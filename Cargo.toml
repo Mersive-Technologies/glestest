@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 gles30 = "0.5.2"
+khronos-egl = "2.1.1"

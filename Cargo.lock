@@ -11,4 +11,43 @@ name = "glestest"
 version = "0.1.0"
 dependencies = [
  "gles30",
+ "khronos-egl",
 ]
+
+[[package]]
+name = "khronos"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0711aaa80e6ba6eb1fa8978f1f46bfcb38ceb2f3f33f3736efbff39dac89f50"
+dependencies = [
+ "libc 0.1.12",
+]
+
+[[package]]
+name = "khronos-egl"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba35280f59eaad0529951ae6ce84357cc954af38c6c74319884f7bdda4df53d"
+dependencies = [
+ "khronos",
+ "libc 0.2.80",
+ "pkg-config",
+]
+
+[[package]]
+name = "libc"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e32a70cf75e5846d53a673923498228bbec6a8624708a9ea5645f075d6276122"
+
+[[package]]
+name = "libc"
+version = "0.2.80"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d58d1b70b004888f764dfbf6a26a3b0342a1632d33968e4a179d8011c760614"
+
+[[package]]
+name = "pkg-config"
+version = "0.3.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3831453b3449ceb48b6d9c7ad7c96d5ea673e9b470a1dc578c2ce6521230884c"
