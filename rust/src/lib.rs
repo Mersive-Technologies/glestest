@@ -63,8 +63,8 @@ fn main(path: String) -> Result<(), Error> {
         info!("EGL context={:?}", ctx);
 
         // create surface
-        let width = 350;
-        let height = 350;
+        let width = 1300;
+        let height = 1300;
         let mut attributes = vec![
             khronos_egl::WIDTH, width.clone(),
             khronos_egl::HEIGHT, height.clone(),
@@ -128,15 +128,13 @@ void main(){{\n\
         let mut bytes = vec![0; metadata.len() as usize];
         f.read(&mut bytes).context("buffer overflow")?;
         info!("Read {} byte image", bytes.len());
-        let tex_width = 1300;
-        let tex_height = 1300;
 
         // -------------------- y ouput texture
         glActiveTexture(GL_TEXTURE1);
         let mut yout: GLuint = 0;
         glGenTextures(1, &mut yout);
         glBindTexture(GL_TEXTURE_2D, yout);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8 as i32, tex_width, tex_height, 0, GL_RED, GL_UNSIGNED_BYTE, null());
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8 as i32, width, height, 0, GL_RED, GL_UNSIGNED_BYTE, null());
         check_error().context("Cannot load texture")?;
         glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -145,7 +143,7 @@ void main(){{\n\
         let mut uvout: GLuint = 0;
         glGenTextures(1, &mut uvout);
         glBindTexture(GL_TEXTURE_2D, uvout);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA as i32, tex_width / 2, tex_height / 2, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, null());
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA as i32, width / 2, height / 2, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, null());
         check_error().context("Cannot load texture")?;
         glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -162,7 +160,7 @@ void main(){{\n\
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR as i32);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR as i32);
         info!("Loading texture...");
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA as i32, tex_width, tex_height, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, bytes.as_ptr() as *const c_void);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA as i32, width, height, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, bytes.as_ptr() as *const c_void);
         info!("Binding sampler...");
         glBindSampler(0, tex_in as u32);
         check_error().context("Cannot load texture")?;
