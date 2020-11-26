@@ -100,11 +100,11 @@ void main(){{\n\
 
         let frag_shader = format!("\
 #version {}\n\
-out vec4 color;\n\
+out float color;\n\
 uniform sampler2D tex_in;\n\
 in vec2 texcoord;
 void main(){{\n\
-    color = texture(tex_in, texcoord);\n\
+    color = texture(tex_in, texcoord).r;\n\
 }}\n\0", ver);
 
         let program_id = make_shader(vert_shader.as_str(), frag_shader.as_str()).context("Couldn't make shader")?;
@@ -184,7 +184,7 @@ void main(){{\n\
 
         // clear
         glViewport(0, 0, width, height);
-        glClearColor(0.5, 0.5, 0.5, 1.0);
+        glClearColor(0.0, 0.0, 0.0, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
         check_error().context("Cannot clear!")?;
 
