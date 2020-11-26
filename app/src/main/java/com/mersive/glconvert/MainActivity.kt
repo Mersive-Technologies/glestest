@@ -1,8 +1,11 @@
 package com.mersive.glconvert
 
-import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.util.Log
+import androidx.appcompat.app.AppCompatActivity
+import org.apache.commons.io.IOUtils
+import java.io.File
+import java.nio.ByteBuffer
 
 class MainActivity : AppCompatActivity() {
     private val tag: String = this.javaClass.name
@@ -11,7 +14,11 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        init(filesDir.absolutePath);
+        val texName = "thanksgiving.jpg";
+        val bytes = this.classLoader.getResourceAsStream(texName).readBytes()
+        File(filesDir.absolutePath, texName).writeBytes(bytes)
+
+        init(filesDir.absolutePath)
     }
 
     init {

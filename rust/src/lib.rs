@@ -9,7 +9,7 @@ use std::ptr::null;
 
 use anyhow::{anyhow, Context, Error};
 use khronos_egl::{choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, initialize, make_current, NO_CONTEXT, GL_COLORSPACE, GL_COLORSPACE_SRGB, swap_buffers, query_surface, create_pixmap_surface, choose_config};
-use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEMENT_ARRAY_BUFFER, GL_FALSE, GL_FLOAT, GL_FRAGMENT_SHADER, GL_INVALID_ENUM, GL_INVALID_FRAMEBUFFER_OPERATION, GL_INVALID_OPERATION, GL_INVALID_VALUE, GL_LINK_STATUS, GL_OUT_OF_MEMORY, GL_STATIC_DRAW, GL_TRIANGLES, GL_TRUE, GL_UNSIGNED_SHORT, GL_VERTEX_SHADER, glAttachShader, glBindBuffer, glBindVertexArray, glBufferData, GLchar, glClear, glCompileShader, glCreateProgram, glCreateShader, glDeleteProgram, glDeleteShader, glDetachShader, glDrawElements, glDrawElementsInstanced, glEnableVertexAttribArray, GLenum, GLfloat, glGenBuffers, glGenVertexArrays, glGetError, glGetProgramiv, glGetShaderiv, glGetUniformLocation, GLint, glLinkProgram, glReadPixels, glShaderSource, GLuint, glUniformMatrix4fv, glUseProgram, glVertexAttribPointer, glCopyTexImage2D, GL_RGB_INTEGER, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, glFinish, glPixelStorei, GL_UNPACK_ALIGNMENT, glBindFramebuffer, glViewport, glClearColor, GL_RGBA, GL_DEPTH_BUFFER_BIT, glDisable, GL_CULL_FACE, GL_DEPTH, GL_DEPTH_TEST, glDrawArrays, glGetAttribLocation, GL_LINES, GL_PACK_ALIGNMENT, glValidateProgram, GL_POINTS, glGetProgramBinary, GL_VALIDATE_STATUS};
+use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEMENT_ARRAY_BUFFER, GL_FALSE, GL_FLOAT, GL_FRAGMENT_SHADER, GL_INVALID_ENUM, GL_INVALID_FRAMEBUFFER_OPERATION, GL_INVALID_OPERATION, GL_INVALID_VALUE, GL_LINK_STATUS, GL_OUT_OF_MEMORY, GL_STATIC_DRAW, GL_TRIANGLES, GL_TRUE, GL_UNSIGNED_SHORT, GL_VERTEX_SHADER, glAttachShader, glBindBuffer, glBindVertexArray, glBufferData, GLchar, glClear, glCompileShader, glCreateProgram, glCreateShader, glDeleteProgram, glDeleteShader, glDetachShader, glDrawElements, glDrawElementsInstanced, glEnableVertexAttribArray, GLenum, GLfloat, glGenBuffers, glGenVertexArrays, glGetError, glGetProgramiv, glGetShaderiv, glGetUniformLocation, GLint, glLinkProgram, glReadPixels, glShaderSource, GLuint, glUniformMatrix4fv, glUseProgram, glVertexAttribPointer, glCopyTexImage2D, GL_RGB_INTEGER, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, glFinish, glPixelStorei, GL_UNPACK_ALIGNMENT, glBindFramebuffer, glViewport, glClearColor, GL_RGBA, GL_DEPTH_BUFFER_BIT, glDisable, GL_CULL_FACE, GL_DEPTH, GL_DEPTH_TEST, glDrawArrays, glGetAttribLocation, GL_LINES, GL_PACK_ALIGNMENT, glValidateProgram, GL_POINTS, glGetProgramBinary, GL_VALIDATE_STATUS, glGenTextures, glTexImage2D, glBindTexture, GL_TEXTURE_2D, GL_RGB};
 use std::fs::File;
 use std::io::Write;
 use jni::JNIEnv;
@@ -17,6 +17,7 @@ use jni::objects::{JObject, JString};
 use log::Level;
 use log::info;
 use log::error;
+use image::io::Reader as ImageReader;
 
 #[no_mangle]
 pub extern fn Java_com_mersive_glconvert_MainActivity_init(
@@ -106,13 +107,22 @@ void main(){{\n\
         let attr_id = glGetAttribLocation(program_id, name);
         info!("Have a program={} attr_id={}", program_id, attr_id);
 
+        // texture
+        let img = ImageReader::open(format!("{}/thanksgiving.jpg", path))?.decode()?;
+        let bytes = img.as_rgb8().unwrap();
+        info!("Read {} byte image", bytes.len());
+        let mut thanksgiving: GLuint = 0;
+        glGenTextures(1, &mut thanksgiving);
+        glBindTexture(GL_TEXTURE_2D, thanksgiving);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB as i32, 1300, 1300, 0, GL_RGB, GL_UNSIGNED_BYTE, bytes.as_ptr() as *const c_void);
+
         let mut vertex_buffer_data: Vec<f32> = vec![
-            -0.5, -0.5, 0.,
-            0.5, -0.5, 0.,
-            0.5, 0.5, 0.,
-            0.5, 0.5, 0.,
-            -0.5, 0.5, 0.,
-            -0.5, -0.5, 0.,
+            -1.0, -1.0, 0.,
+            1.0, -1.0, 0.,
+            1.0, 1.0, 0.,
+            1.0, 1.0, 0.,
+            -1.0, 1.0, 0.,
+            -1.0, -1.0, 0.,
         ];
 
         // vert buf
