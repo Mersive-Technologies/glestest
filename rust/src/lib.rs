@@ -13,19 +13,22 @@ use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEME
 use std::fs::File;
 use std::io::Write;
 use jni::JNIEnv;
-use jni::objects::JObject;
+use jni::objects::{JObject, JString};
 use log::Level;
 use log::info;
 use log::error;
 
 #[no_mangle]
 pub extern fn Java_com_mersive_glconvert_MainActivity_init(
-    _env: JNIEnv,
-   _obj: JObject,
+    env: JNIEnv,
+    _obj: JObject,
+    path: JString,
 ) {
     android_logger::init_once(android_logger::Config::default().with_min_level(Level::Debug));
     info!("Hello, Rust!");
-    let res = main();
+
+    let path: String = env.get_string(path).unwrap().into();
+    let res = main(path);
     if res.is_err() {
         error!("Error running rust: {:?}", res.unwrap());
     } else {
@@ -33,7 +36,7 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
     }
 }
 
-fn main() -> Result<(), Error> {
+fn main(path: String) -> Result<(), Error> {
     unsafe {
         // let args: Vec<String> = env::args().collect();
         let idx = 0; //args.get(1).unwrap().parse::<usize>().unwrap();
@@ -65,11 +68,11 @@ fn main() -> Result<(), Error> {
             khronos_egl::WIDTH, width.clone(),
             khronos_egl::HEIGHT, height.clone(),
         ];
-        #[cfg(os="linux")]
-        {
-            attributes.extend_from_slice(&[khronos_egl::TEXTURE_FORMAT, khronos_egl::TEXTURE_RGBA]);
-            attributes.extend_from_slice(&[khronos_egl::TEXTURE_TARGET, khronos_egl::TEXTURE_2D]);
-        }
+        #[cfg(os = "linux")]
+            {
+                attributes.extend_from_slice(&[khronos_egl::TEXTURE_FORMAT, khronos_egl::TEXTURE_RGBA]);
+                attributes.extend_from_slice(&[khronos_egl::TEXTURE_TARGET, khronos_egl::TEXTURE_2D]);
+            }
         attributes.push(khronos_egl::NONE);
         let surface = create_pbuffer_surface(display, config, &attributes).expect("Couldn't create pbuffer");
         // create_pixmap_surface(display, config);
@@ -79,10 +82,10 @@ fn main() -> Result<(), Error> {
         info!("w={} h={}", w, h);
 
         // https://github.com/AlexCharlton/hello-modern-opengl/blob/master/hello-gl.c
-        #[cfg(target_os="android")]
-        let ver = "300 es";
-        #[cfg(target_os="linux")]
-        let ver = "330";
+        #[cfg(target_os = "android")]
+            let ver = "300 es";
+        #[cfg(target_os = "linux")]
+            let ver = "330";
 
         let vert_shader = format!("\
 #version {}\n\
@@ -107,7 +110,6 @@ void main(){{\n\
             -0.5, -0.5, 0.,
             0.5, -0.5, 0.,
             0.5, 0.5, 0.,
-
             0.5, 0.5, 0.,
             -0.5, 0.5, 0.,
             -0.5, -0.5, 0.,
@@ -158,8 +160,9 @@ void main(){{\n\
         check_error().context("Cannot get pixels!")?;
 
         // Save
-        info!("Writing file...");
-        let mut file = File::create(format!("/sdcard/pic{}.raw", idx))?;
+        let path = format!("{}/pic{}.raw", path, idx);
+        info!("Writing file {}...", path);
+        let mut file = File::create(path)?;
         file.write_all(&pixels[..])?;
     }
 

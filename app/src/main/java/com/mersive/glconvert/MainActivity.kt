@@ -11,7 +11,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        init();
+        init(filesDir.absolutePath);
     }
 
     init {
@@ -23,6 +23,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    external fun init()
+    external fun init(dir: String)
 
 }
