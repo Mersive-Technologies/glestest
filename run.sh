@@ -1,1 +1,1 @@
-adb shell /data/glestest
+adb shell "cd /data && ./glestest 0"
