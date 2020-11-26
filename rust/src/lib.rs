@@ -9,7 +9,7 @@ use std::ptr::null;
 
 use anyhow::{anyhow, Context, Error};
 use khronos_egl::{choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, initialize, make_current, NO_CONTEXT, GL_COLORSPACE, GL_COLORSPACE_SRGB, swap_buffers, query_surface, create_pixmap_surface, choose_config};
-use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEMENT_ARRAY_BUFFER, GL_FALSE, GL_FLOAT, GL_FRAGMENT_SHADER, GL_INVALID_ENUM, GL_INVALID_FRAMEBUFFER_OPERATION, GL_INVALID_OPERATION, GL_INVALID_VALUE, GL_LINK_STATUS, GL_OUT_OF_MEMORY, GL_STATIC_DRAW, GL_TRIANGLES, GL_TRUE, GL_UNSIGNED_SHORT, GL_VERTEX_SHADER, glAttachShader, glBindBuffer, glBindVertexArray, glBufferData, GLchar, glClear, glCompileShader, glCreateProgram, glCreateShader, glDeleteProgram, glDeleteShader, glDetachShader, glDrawElements, glDrawElementsInstanced, glEnableVertexAttribArray, GLenum, GLfloat, glGenBuffers, glGenVertexArrays, glGetError, glGetProgramiv, glGetShaderiv, glGetUniformLocation, GLint, glLinkProgram, glReadPixels, glShaderSource, GLuint, glUniformMatrix4fv, glUseProgram, glVertexAttribPointer, glCopyTexImage2D, GL_RGB_INTEGER, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, glFinish, glPixelStorei, GL_UNPACK_ALIGNMENT, glBindFramebuffer, glViewport, glClearColor, GL_RGBA, GL_DEPTH_BUFFER_BIT, glDisable, GL_CULL_FACE, GL_DEPTH, GL_DEPTH_TEST, glDrawArrays, glGetAttribLocation, GL_LINES, GL_PACK_ALIGNMENT, glValidateProgram, GL_POINTS, GL_VALIDATE_STATUS, glGenTextures, glTexImage2D, glBindTexture, GL_TEXTURE_2D, GL_RGB, glBindSampler, GL_TEXTURE0, glActiveTexture, glTexParameteri, GL_TEXTURE_WRAP_S, GL_REPEAT, GL_TEXTURE_WRAP_T, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER, GL_LINEAR, GL_RG, GL_LUMINANCE_ALPHA};
+use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEMENT_ARRAY_BUFFER, GL_FALSE, GL_FLOAT, GL_FRAGMENT_SHADER, GL_INVALID_ENUM, GL_INVALID_FRAMEBUFFER_OPERATION, GL_INVALID_OPERATION, GL_INVALID_VALUE, GL_LINK_STATUS, GL_OUT_OF_MEMORY, GL_STATIC_DRAW, GL_TRIANGLES, GL_TRUE, GL_UNSIGNED_SHORT, GL_VERTEX_SHADER, glAttachShader, glBindBuffer, glBindVertexArray, glBufferData, GLchar, glClear, glCompileShader, glCreateProgram, glCreateShader, glDeleteProgram, glDeleteShader, glDetachShader, glDrawElements, glDrawElementsInstanced, glEnableVertexAttribArray, GLenum, GLfloat, glGenBuffers, glGenVertexArrays, glGetError, glGetProgramiv, glGetShaderiv, glGetUniformLocation, GLint, glLinkProgram, glReadPixels, glShaderSource, GLuint, glUniformMatrix4fv, glUseProgram, glVertexAttribPointer, glCopyTexImage2D, GL_RGB_INTEGER, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, glFinish, glPixelStorei, GL_UNPACK_ALIGNMENT, glBindFramebuffer, glViewport, glClearColor, GL_RGBA, GL_DEPTH_BUFFER_BIT, glDisable, GL_CULL_FACE, GL_DEPTH, GL_DEPTH_TEST, glDrawArrays, glGetAttribLocation, GL_LINES, GL_PACK_ALIGNMENT, glValidateProgram, GL_POINTS, GL_VALIDATE_STATUS, glGenTextures, glTexImage2D, glBindTexture, GL_TEXTURE_2D, GL_RGB, glBindSampler, GL_TEXTURE0, glActiveTexture, glTexParameteri, GL_TEXTURE_WRAP_S, GL_REPEAT, GL_TEXTURE_WRAP_T, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER, GL_LINEAR, GL_RG, GL_LUMINANCE_ALPHA, GL_TEXTURE1, GL_LUMINANCE, GL_TEXTURE2};
 use std::fs::File;
 use std::io::{Write, Read};
 use jni::JNIEnv;
@@ -107,7 +107,9 @@ void main(){{\n\
     color = texture(tex_in, texcoord).r;\n\
 }}\n\0", ver);
 
+        info!("Compiling shader...");
         let program_id = make_shader(vert_shader.as_str(), frag_shader.as_str()).context("Couldn't make shader")?;
+        info!("Getting parameters...");
         let name = "vertex\0".as_ptr() as *const GLchar;
         let vertex_loc = glGetAttribLocation(program_id, name);
 
@@ -126,7 +128,27 @@ void main(){{\n\
         let mut bytes = vec![0; metadata.len() as usize];
         f.read(&mut bytes).context("buffer overflow")?;
         info!("Read {} byte image", bytes.len());
+        let tex_width = 1300;
+        let tex_height = 1300;
 
+        // -------------------- y ouput texture
+        glActiveTexture(GL_TEXTURE1);
+        let mut yout: GLuint = 0;
+        glGenTextures(1, &mut yout);
+        glBindTexture(GL_TEXTURE_2D, yout);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE as i32, tex_width, tex_height, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, null());
+        check_error().context("Cannot load texture")?;
+
+        // -------------------- uv ouput texture
+        glActiveTexture(GL_TEXTURE2);
+        let mut uvout: GLuint = 0;
+        glGenTextures(1, &mut uvout);
+        glBindTexture(GL_TEXTURE_2D, uvout);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA as i32, tex_width / 2, tex_height / 2, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, null());
+        check_error().context("Cannot load texture")?;
+
+        // -------------------- input texture
+        glActiveTexture(GL_TEXTURE0);
         let mut thanksgiving: GLuint = 0;
         info!("Generating texture...");
         glGenTextures(1, &mut thanksgiving);
@@ -138,9 +160,7 @@ void main(){{\n\
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR as i32);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR as i32);
         info!("Loading texture...");
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA as i32, 1300, 1300, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, bytes.as_ptr() as *const c_void);
-        info!("Activating texture...");
-        glActiveTexture(GL_TEXTURE0 + 0);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA as i32, tex_width, tex_height, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, bytes.as_ptr() as *const c_void);
         info!("Binding sampler...");
         glBindSampler(0, tex_in as u32);
         check_error().context("Cannot load texture")?;
