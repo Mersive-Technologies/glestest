@@ -1,0 +1,73 @@
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+}
+
+apply plugin: 'org.mozilla.rust-android-gradle.rust-android'
+
+android {
+    compileSdkVersion 29
+    buildToolsVersion "29.0.2"
+    ndkVersion "21.3.6528147"
+
+    defaultConfig {
+        applicationId "com.mersive.glconvert"
+        minSdkVersion 22
+        targetSdkVersion 26
+        versionCode 1
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+cargo {
+    def release = false
+    for(task in gradle.startParameter.taskNames) {
+        if(task.contains("Release")) {
+            release = true
+        }
+        println("task=${task}")
+    }
+    def buildType = release ? 'release' : 'debug'
+
+    println("Performing a ${buildType} cargo build...")
+    module = "../rust"
+    libname = "glestest"
+    targets = ["arm64"]
+    verbose = true
+    profile = buildType
+    extraCargoBuildArguments = []
+    exec { spec, toolchain ->
+        // https://stackoverflow.com/questions/22228180/why-does-my-cross-compiling-fail
+        spec.environment("PKG_CONFIG_PATH", "")
+        spec.environment("PKG_CONFIG_LIBDIR", "${projectDir}/build/untar/arm64/lib/pkgconfig")
+        spec.environment("PKG_CONFIG_ALLOW_CROSS", "1")
+        spec.environment("RUSTFLAGS", '-L ../usbiplib/src/main/jniLibs/arm64-v8a -L ../../usbiplib/src/main/jniLibs/arm64-v8a -lffi -lintl --cfg target_os="android"')
+    }
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
+    implementation 'androidx.core:core-ktx:1.3.2'
+    implementation 'androidx.appcompat:appcompat:1.2.0'
+    implementation 'com.google.android.material:material:1.1.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.0.4'
+    testImplementation 'junit:junit:4.+'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.2'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.3.0'
+}
