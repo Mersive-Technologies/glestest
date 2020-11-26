@@ -9,7 +9,7 @@ use std::ptr::null;
 
 use anyhow::{anyhow, Context, Error};
 use khronos_egl::{choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, initialize, make_current, NO_CONTEXT, GL_COLORSPACE, GL_COLORSPACE_SRGB, swap_buffers, query_surface, create_pixmap_surface, choose_config};
-use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEMENT_ARRAY_BUFFER, GL_FALSE, GL_FLOAT, GL_FRAGMENT_SHADER, GL_INVALID_ENUM, GL_INVALID_FRAMEBUFFER_OPERATION, GL_INVALID_OPERATION, GL_INVALID_VALUE, GL_LINK_STATUS, GL_OUT_OF_MEMORY, GL_STATIC_DRAW, GL_TRIANGLES, GL_TRUE, GL_UNSIGNED_SHORT, GL_VERTEX_SHADER, glAttachShader, glBindBuffer, glBindVertexArray, glBufferData, GLchar, glClear, glCompileShader, glCreateProgram, glCreateShader, glDeleteProgram, glDeleteShader, glDetachShader, glDrawElements, glDrawElementsInstanced, glEnableVertexAttribArray, GLenum, GLfloat, glGenBuffers, glGenVertexArrays, glGetError, glGetProgramiv, glGetShaderiv, glGetUniformLocation, GLint, glLinkProgram, glReadPixels, glShaderSource, GLuint, glUniformMatrix4fv, glUseProgram, glVertexAttribPointer, glCopyTexImage2D, GL_RGB_INTEGER, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, glFinish, glPixelStorei, GL_UNPACK_ALIGNMENT, glBindFramebuffer, glViewport, glClearColor, GL_RGBA, GL_DEPTH_BUFFER_BIT, glDisable, GL_CULL_FACE, GL_DEPTH, GL_DEPTH_TEST, glDrawArrays, glGetAttribLocation, GL_LINES, GL_PACK_ALIGNMENT, glValidateProgram, GL_POINTS, glGetProgramBinary, GL_VALIDATE_STATUS, glGenTextures, glTexImage2D, glBindTexture, GL_TEXTURE_2D, GL_RGB};
+use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEMENT_ARRAY_BUFFER, GL_FALSE, GL_FLOAT, GL_FRAGMENT_SHADER, GL_INVALID_ENUM, GL_INVALID_FRAMEBUFFER_OPERATION, GL_INVALID_OPERATION, GL_INVALID_VALUE, GL_LINK_STATUS, GL_OUT_OF_MEMORY, GL_STATIC_DRAW, GL_TRIANGLES, GL_TRUE, GL_UNSIGNED_SHORT, GL_VERTEX_SHADER, glAttachShader, glBindBuffer, glBindVertexArray, glBufferData, GLchar, glClear, glCompileShader, glCreateProgram, glCreateShader, glDeleteProgram, glDeleteShader, glDetachShader, glDrawElements, glDrawElementsInstanced, glEnableVertexAttribArray, GLenum, GLfloat, glGenBuffers, glGenVertexArrays, glGetError, glGetProgramiv, glGetShaderiv, glGetUniformLocation, GLint, glLinkProgram, glReadPixels, glShaderSource, GLuint, glUniformMatrix4fv, glUseProgram, glVertexAttribPointer, glCopyTexImage2D, GL_RGB_INTEGER, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, glFinish, glPixelStorei, GL_UNPACK_ALIGNMENT, glBindFramebuffer, glViewport, glClearColor, GL_RGBA, GL_DEPTH_BUFFER_BIT, glDisable, GL_CULL_FACE, GL_DEPTH, GL_DEPTH_TEST, glDrawArrays, glGetAttribLocation, GL_LINES, GL_PACK_ALIGNMENT, glValidateProgram, GL_POINTS, GL_VALIDATE_STATUS, glGenTextures, glTexImage2D, glBindTexture, GL_TEXTURE_2D, GL_RGB, glBindSampler, GL_TEXTURE0, glActiveTexture, glTexParameteri, GL_TEXTURE_WRAP_S, GL_REPEAT, GL_TEXTURE_WRAP_T, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER, GL_LINEAR};
 use std::fs::File;
 use std::io::Write;
 use jni::JNIEnv;
@@ -91,21 +91,33 @@ fn main(path: String) -> Result<(), Error> {
         let vert_shader = format!("\
 #version {}\n\
 in vec3 vertex;\n\
+in vec2 texcoordin;\n\
+out vec2 texcoord;
 void main(){{\n\
     gl_Position = vec4(vertex, 1.0);\n\
+    texcoord = texcoordin;
 }}\n\0", ver);
 
         let frag_shader = format!("\
 #version {}\n\
 out vec4 color;\n\
+uniform sampler2D tex_in;\n\
+in vec2 texcoord;
 void main(){{\n\
-    color = vec4(1.0, 1.0, 1.0, 1.0);\n\
+    color = texture(tex_in, texcoord);\n\
 }}\n\0", ver);
 
         let program_id = make_shader(vert_shader.as_str(), frag_shader.as_str()).expect("Couldn't make shader");
         let name = "vertex\0".as_ptr() as *const GLchar;
-        let attr_id = glGetAttribLocation(program_id, name);
-        info!("Have a program={} attr_id={}", program_id, attr_id);
+        let vertex_loc = glGetAttribLocation(program_id, name);
+
+        let name = "texcoordin\0".as_ptr() as *const GLchar;
+        let texcoord_loc = glGetAttribLocation(program_id, name);
+
+        let name = "tex_in\0".as_ptr() as *const GLchar;
+        let tex_in = glGetUniformLocation(program_id, name);
+        
+        info!("Have a program={} vertex_loc={} texcoord_loc={} tex_in={}", program_id, vertex_loc, texcoord_loc, tex_in);
 
         // texture
         let img = ImageReader::open(format!("{}/thanksgiving.jpg", path))?.decode()?;
@@ -114,15 +126,22 @@ void main(){{\n\
         let mut thanksgiving: GLuint = 0;
         glGenTextures(1, &mut thanksgiving);
         glBindTexture(GL_TEXTURE_2D, thanksgiving);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT as i32);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT as i32);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR as i32);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR as i32);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB as i32, 1300, 1300, 0, GL_RGB, GL_UNSIGNED_BYTE, bytes.as_ptr() as *const c_void);
+        glActiveTexture(GL_TEXTURE0 + 0);
+        glBindSampler(0, tex_in as u32);
+        check_error().context("Cannot load texture")?;
 
         let mut vertex_buffer_data: Vec<f32> = vec![
-            -1.0, -1.0, 0.,
-            1.0, -1.0, 0.,
-            1.0, 1.0, 0.,
-            1.0, 1.0, 0.,
-            -1.0, 1.0, 0.,
-            -1.0, -1.0, 0.,
+            -0.8, -0.8, 0., 0., 0.,
+            0.8, -0.8, 0., 1., 0.,
+            0.8, 0.8, 0., 1., 1.,
+            0.8, 0.8, 0., 0., 0.,
+            -0.8, -0.8, 0., 1., 1.,
+            -0.8, 0.8, 0., 1., 0.,
         ];
 
         // vert buf
@@ -140,15 +159,26 @@ void main(){{\n\
         if vertex_array_id == 0 { panic!("Invalid vertex array!"); }
         glBindVertexArray(vertex_array_id);
         check_error().context("Cannot bind buffer")?;
-        glEnableVertexAttribArray(attr_id as u32);
-        glVertexAttribPointer(attr_id as u32, 3, GL_FLOAT, GL_FALSE as u8, 0, null());
+
+        // vertex location
+        glEnableVertexAttribArray(vertex_loc as u32);
+        glVertexAttribPointer(vertex_loc as u32, 3, GL_FLOAT, GL_FALSE as u8, 20, null());
         check_error().context("Cannot set vertex attrib pointer")?;
 
+        // texture
+        glEnableVertexAttribArray(texcoord_loc as u32);
+        check_error().context("Cannot enable vertex attrib array")?;
+        let num = 12;
+        glVertexAttribPointer(texcoord_loc as u32, 2, GL_FLOAT, GL_FALSE as u8, 20, num as *const c_void);
+        check_error().context("Cannot set texture attrib pointer")?;
+
+        // clear
         glViewport(0, 0, width, height);
         glClearColor(0.5, 0.5, 0.5, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
         check_error().context("Cannot clear!")?;
 
+        // draw
         glUseProgram(program_id);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         glValidateProgram(program_id);
@@ -157,7 +187,6 @@ void main(){{\n\
         if res == 0 { panic!("Bad program") }
         check_error().expect("Invalid program!");
 
-        // glDrawArrays(GL_POINTS, 0, (vertex_buffer_data.len() / 3) as i32);
         glDrawArrays(GL_TRIANGLES, 0, (vertex_buffer_data.len() / 3) as i32);
         check_error().context("Cannot draw!")?;
         glFinish();
