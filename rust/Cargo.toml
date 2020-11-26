@@ -10,3 +10,8 @@ edition = "2018"
 khronos-egl = "2.1.1"
 rs-gles3 = { git = "https://github.com/Mersive-Technologies/rs-gles3.git", branch = "bg_gles3_link" }
 anyhow = "1.0.34"
+android_logger = "0.9.0"
+
+[lib]
+name = "glestest"
+crate-type = ["cdylib"]

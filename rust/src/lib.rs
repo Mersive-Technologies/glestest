@@ -1,3 +1,8 @@
+#![cfg(target_os = "android")]
+#![allow(non_snake_case)]
+
+extern crate android_logger;
+
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::ptr::null;
@@ -8,6 +13,15 @@ use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEME
 use std::fs::File;
 use std::io::Write;
 use std::env;
+
+#[no_mangle]
+pub extern fn Java_com_mersive_glconvert_MainActivity_init(
+    env: JNIEnv,
+   _obj: JObject,
+) {
+    android_logger::init_once(Config::default().with_min_level(Level::Debug));
+    info!("Hello, Rust!");
+}
 
 fn main() -> Result<(), Error> {
     unsafe {
