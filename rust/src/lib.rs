@@ -13,13 +13,17 @@ use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEME
 use std::fs::File;
 use std::io::Write;
 use std::env;
+use jni::JNIEnv;
+use jni::objects::JObject;
+use log::Level;
+use log::info;
 
 #[no_mangle]
 pub extern fn Java_com_mersive_glconvert_MainActivity_init(
     env: JNIEnv,
    _obj: JObject,
 ) {
-    android_logger::init_once(Config::default().with_min_level(Level::Debug));
+    android_logger::init_once(android_logger::Config::default().with_min_level(Level::Debug));
     info!("Hello, Rust!");
 }
 
