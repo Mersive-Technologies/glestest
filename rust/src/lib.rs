@@ -12,40 +12,51 @@ use khronos_egl::{choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_co
 use rs_gles3::{GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_COMPILE_STATUS, GL_ELEMENT_ARRAY_BUFFER, GL_FALSE, GL_FLOAT, GL_FRAGMENT_SHADER, GL_INVALID_ENUM, GL_INVALID_FRAMEBUFFER_OPERATION, GL_INVALID_OPERATION, GL_INVALID_VALUE, GL_LINK_STATUS, GL_OUT_OF_MEMORY, GL_STATIC_DRAW, GL_TRIANGLES, GL_TRUE, GL_UNSIGNED_SHORT, GL_VERTEX_SHADER, glAttachShader, glBindBuffer, glBindVertexArray, glBufferData, GLchar, glClear, glCompileShader, glCreateProgram, glCreateShader, glDeleteProgram, glDeleteShader, glDetachShader, glDrawElements, glDrawElementsInstanced, glEnableVertexAttribArray, GLenum, GLfloat, glGenBuffers, glGenVertexArrays, glGetError, glGetProgramiv, glGetShaderiv, glGetUniformLocation, GLint, glLinkProgram, glReadPixels, glShaderSource, GLuint, glUniformMatrix4fv, glUseProgram, glVertexAttribPointer, glCopyTexImage2D, GL_RGB_INTEGER, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, glFinish, glPixelStorei, GL_UNPACK_ALIGNMENT, glBindFramebuffer, glViewport, glClearColor, GL_RGBA, GL_DEPTH_BUFFER_BIT, glDisable, GL_CULL_FACE, GL_DEPTH, GL_DEPTH_TEST, glDrawArrays, glGetAttribLocation, GL_LINES, GL_PACK_ALIGNMENT, glValidateProgram, GL_POINTS, glGetProgramBinary, GL_VALIDATE_STATUS};
 use std::fs::File;
 use std::io::Write;
-use std::env;
 use jni::JNIEnv;
 use jni::objects::JObject;
 use log::Level;
 use log::info;
+use log::error;
 
 #[no_mangle]
 pub extern fn Java_com_mersive_glconvert_MainActivity_init(
-    env: JNIEnv,
+    _env: JNIEnv,
    _obj: JObject,
 ) {
     android_logger::init_once(android_logger::Config::default().with_min_level(Level::Debug));
     info!("Hello, Rust!");
+    let res = main();
+    if res.is_err() {
+        error!("Error running rust: {:?}", res.unwrap());
+    } else {
+        info!("Converted image!");
+    }
 }
 
 fn main() -> Result<(), Error> {
     unsafe {
-        let args: Vec<String> = env::args().collect();
-        let idx = args.get(1).unwrap().parse::<usize>().unwrap();
+        // let args: Vec<String> = env::args().collect();
+        let idx = 0; //args.get(1).unwrap().parse::<usize>().unwrap();
 
         // egl init
-        let display = get_display(DEFAULT_DISPLAY).expect("Need a display!");
+        let display = get_display(DEFAULT_DISPLAY).context("Need a display!")?;
+        let res = initialize(display).context("Can't initialize")?;
+        info!("EGL version={:?}", res);
+        let mut configs: Vec<Config> = Vec::with_capacity(100);
+        info!("Choosing config...");
         let attributes = [
             khronos_egl::NONE
         ];
-        let res = initialize(display).expect("Can't initialize");
-        println!("EGL version={:?}", res);
-        let mut configs: Vec<Config> = Vec::with_capacity(100);
         choose_config(display, &attributes, &mut configs)
-            .expect("unable to choose an EGL configuration");
-        println!("count={}", configs.len());
+            .context("unable to choose an EGL configuration")?;
+        info!("count={}", configs.len());
         let config = configs.remove(idx);
-        let ctx = create_context(display, config, None, &attributes).expect("Need a context!");
-        println!("EGL context={:?}", ctx);
+        let attributes = [
+            khronos_egl::CONTEXT_MAJOR_VERSION, 3,
+            khronos_egl::NONE
+        ];
+        let ctx = create_context(display, config, None, &attributes).context("Need a context!")?;
+        info!("EGL context={:?}", ctx);
 
         // create surface
         let width = 350;
@@ -65,7 +76,7 @@ fn main() -> Result<(), Error> {
         make_current(display, Some(surface.clone()), Some(surface.clone()), Some(ctx)).expect("Can't make current");
         let w = query_surface(display, surface, khronos_egl::WIDTH).expect("Can't get width!");
         let h = query_surface(display, surface, khronos_egl::HEIGHT).expect("Can't get HEIGHT!");
-        println!("w={} h={}", w, h);
+        info!("w={} h={}", w, h);
 
         // https://github.com/AlexCharlton/hello-modern-opengl/blob/master/hello-gl.c
         #[cfg(target_os="android")]
@@ -90,7 +101,7 @@ void main(){{\n\
         let program_id = make_shader(vert_shader.as_str(), frag_shader.as_str()).expect("Couldn't make shader");
         let name = "vertex\0".as_ptr() as *const GLchar;
         let attr_id = glGetAttribLocation(program_id, name);
-        println!("Have a program={} attr_id={}", program_id, attr_id);
+        info!("Have a program={} attr_id={}", program_id, attr_id);
 
         let mut vertex_buffer_data: Vec<f32> = vec![
             -0.5, -0.5, 0.,
@@ -147,7 +158,8 @@ void main(){{\n\
         check_error().context("Cannot get pixels!")?;
 
         // Save
-        let mut file = File::create(format!("pic{}.raw", idx))?;
+        info!("Writing file...");
+        let mut file = File::create(format!("/sdcard/pic{}.raw", idx))?;
         file.write_all(&pixels[..])?;
     }
 
