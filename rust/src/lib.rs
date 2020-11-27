@@ -100,18 +100,21 @@ fn main(path: String) -> Result<(), Error> {
 layout(local_size_x = 1, local_size_y = 1) in;\n\
 layout(std430) buffer;\n\
 layout(binding = 0) writeonly buffer Output {\n\
-    uint elements[650][1300];\n\
+    uint elements[1300][1300];\n\
 } output_data;\n\
 layout(binding = 1) readonly buffer Input0 {\n\
-    uint elements[650][1300];\n\
+    uint elements[1300][650];\n\
 } input_data0;\n\
 void main()\n\
 {\n\
-    uint x = gl_GlobalInvocationID.x;\n\
-    uint y = gl_GlobalInvocationID.y;\n\
-    uint inval = input_data0.elements[x][y] >> 24;\n\
-    uint outval = inval | inval << 16u | inval << 8u | 255u << 24u;
-    output_data.elements[x][y] = outval;\n\
+    uint y = gl_GlobalInvocationID.x;\n\
+    uint x = gl_GlobalInvocationID.y;\n\
+
+    uint shift = x % 2u == 0u ? 24u : 8u;
+    uint Y = (input_data0.elements[y][x / 2u] >> shift) & 0xFFu;\n\
+    uint argb = 255u << 24u | Y << 16u | Y << 8u | Y;
+
+    output_data.elements[y][x] = argb;\n\
 }";
 
         // texture
@@ -130,7 +133,7 @@ void main()\n\
         glBufferData(GL_SHADER_STORAGE_BUFFER, in_byte_cnt as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY);
         info!("input_buffer worked!");
 
-        let out_px_cnt = (width / 2 * height) as usize; // Y plane only for now
+        let out_px_cnt = (width * height) as usize; // Y plane only for now
         let out_byte_cnt = out_px_cnt * size_of::<u32>();
         let mut output_buffer: GLuint = 0;
         glGenBuffers(1, &mut output_buffer);
@@ -146,7 +149,7 @@ void main()\n\
         glAttachShader(program, shader);
         glLinkProgram(program);
         glUseProgram(program);
-        glDispatchCompute(width as u32 / 2, height as u32, 1);
+        glDispatchCompute(width as u32, height as u32, 1);
         info!("glDispatchCompute worked!");
 
         let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_byte_cnt as i64, GL_MAP_READ_BIT ) as *const u8;
