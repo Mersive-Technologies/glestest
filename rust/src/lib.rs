@@ -100,18 +100,18 @@ fn main(path: String) -> Result<(), Error> {
 layout(local_size_x = 1, local_size_y = 1) in;\n\
 layout(std430) buffer;\n\
 layout(binding = 0) writeonly buffer Output {\n\
-    uint elements[1300][1300];\n\
+    uint elements[650][1300];\n\
 } output_data;\n\
 layout(binding = 1) readonly buffer Input0 {\n\
-    uint elements[1300][1300];\n\
+    uint elements[650][1300];\n\
 } input_data0;\n\
 void main()\n\
 {\n\
     uint x = gl_GlobalInvocationID.x;\n\
     uint y = gl_GlobalInvocationID.y;\n\
-    uint inval = input_data0.elements[y][x];\n\
-    uint outval = inval;
-    output_data.elements[y][x] = outval;\n\
+    uint inval = input_data0.elements[x][y] >> 24;\n\
+    uint outval = inval | inval << 16u | inval << 8u | 255u << 24u;
+    output_data.elements[x][y] = outval;\n\
 }";
 
         // texture
@@ -122,19 +122,21 @@ void main()\n\
         f.read(&mut data).context("buffer overflow")?;
         info!("Read {} byte image", data.len());
 
+        let in_byte_cnt = data.len();
         let mut input_buffer: GLuint = 0;
         glGenBuffers(1, &mut input_buffer);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, input_buffer);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, input_buffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, (size_of::<u8>() * data.len()) as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, in_byte_cnt as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY);
         info!("input_buffer worked!");
 
-        let out_size = (width * height) as usize; // Y plane only for now
+        let out_px_cnt = (width / 2 * height) as usize; // Y plane only for now
+        let out_byte_cnt = out_px_cnt * size_of::<u32>();
         let mut output_buffer: GLuint = 0;
         glGenBuffers(1, &mut output_buffer);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, output_buffer);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, output_buffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, (size_of::<u8>() * out_size) as i64, null() as *const c_void, GL_DYNAMIC_READ);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, out_byte_cnt as i64, null() as *const c_void, GL_DYNAMIC_READ);
         info!("output_buffer worked!");
 
         let program = glCreateProgram();
@@ -147,11 +149,11 @@ void main()\n\
         glDispatchCompute(width as u32 / 2, height as u32, 1);
         info!("glDispatchCompute worked!");
 
-        let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_size as i64, GL_MAP_READ_BIT ) as *const u8;
+        let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_byte_cnt as i64, GL_MAP_READ_BIT ) as *const u8;
         info!("glMapBufferRange worked: {:?}", ptr);
         glUnmapBuffer( GL_SHADER_STORAGE_BUFFER );
         info!("glUnmapBuffer worked!");
-        let pixels = slice::from_raw_parts(ptr, out_size as usize);
+        let pixels = slice::from_raw_parts(ptr, out_byte_cnt as usize);
 
         // Save
         let path = format!("{}/pic{}.raw", path, idx);
