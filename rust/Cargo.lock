@@ -199,12 +199,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gles31-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b41dcb68d514966ea626b2ec203cfb64648cbb15d09fe59e62670e59386b39a"
+dependencies = [
+ "bindgen",
+]
+
+[[package]]
 name = "glestest"
 version = "0.1.0"
 dependencies = [
  "android_logger",
  "anyhow",
- "bindgen",
+ "gles31-sys",
  "jni",
  "khronos-egl",
  "log",

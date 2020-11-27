@@ -6,22 +6,22 @@
 
 extern crate android_logger;
 
-use std::ffi::c_void;
+use std::ffi::{c_void, CString};
 use std::fs::File;
 use std::io::{Read, Write};
+use std::mem::size_of;
 use std::os::raw::c_char;
-use std::ptr::null;
+use std::ptr::{null, null_mut};
 
 use anyhow::{anyhow, Context, Error};
+use gles31_sys::{GL_COMPILE_STATUS, GL_COMPUTE_SHADER, GL_INFO_LOG_LENGTH, GL_SHADER_STORAGE_BUFFER, GL_STREAM_COPY, glBindBuffer, glBindBufferBase, glBufferData, GLchar, glCompileShader, glCreateProgram, glCreateShader, glDeleteShader, glGenBuffers, glGetError, glGetShaderInfoLog, glGetShaderiv, GLint, glShaderSource, GLsizei, GLuint, glAttachShader, glLinkProgram, glUseProgram, glDispatchCompute, glMapBufferRange, GL_READ_ONLY, glUnmapBuffer, glMemoryBarrier, GL_SHADER_STORAGE_BARRIER_BIT, GL_MAP_READ_BIT, GL_DYNAMIC_READ};
 use jni::JNIEnv;
 use jni::objects::{JObject, JString};
 use khronos_egl::{choose_config, choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, create_pixmap_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, GL_COLORSPACE, GL_COLORSPACE_SRGB, initialize, make_current, NO_CONTEXT, query_surface, swap_buffers};
 use log::error;
 use log::info;
 use log::Level;
-use std::mem::size_of;
-
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+use std::slice;
 
 #[no_mangle]
 pub extern fn Java_com_mersive_glconvert_MainActivity_init(
@@ -93,33 +93,84 @@ fn main(path: String) -> Result<(), Error> {
         #[cfg(target_os = "linux")]
             let ver = "330";
 
-        let vert_shader = format!("\
-#version {}\n\
-in vec3 vertex;\n\
-in vec2 texcoordin;\n\
-out vec2 texcoord;
-void main(){{\n\
-    gl_Position = vec4(vertex, 1.0);\n\
-    texcoord = texcoordin;
-}}\n\0", ver);
+        info!("ver={}", ver);
 
-        let frag_shader = format!("\
-#version {}\n\
-out float color;\n\
-uniform sampler2D tex_in;\n\
-in vec2 texcoord;
-void main(){{\n\
-    color = texture(tex_in, texcoord).r;\n\
-}}\n\0", ver);
+        // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
+        let COMPUTE_SHADER = "#version 310 es\n\
+layout(local_size_x = 128) in;\n\
+layout(std430) buffer;\n\
+layout(binding = 0) writeonly buffer Output {\n\
+    uint elements[];\n\
+} output_data;\n\
+layout(binding = 1) readonly buffer Input0 {\n\
+    uint elements[];\n\
+} input_data0;\n\
+void main()\n\
+{\n\
+    uint ident = gl_GlobalInvocationID.x;\n\
+    output_data.elements[ident] = input_data0.elements[ident] * input_data0.elements[ident];\n\
+}";
 
-        info!("{} {}", vert_shader, frag_shader);
+        let mut input_buffer: GLuint = 0;
+        let data: Vec<GLuint> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        glGenBuffers(1, &mut input_buffer);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, input_buffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, input_buffer);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, (size_of::<GLuint>() * data.len()) as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY);
+        info!("input_buffer worked!");
 
-        let mut data_buffer: GLuint = 0;
-        let data: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        glGenBuffers(1, &mut data_buffer);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, data_buffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, size_of::<u32>() as i64 * 10, data.as_ptr() as *const c_void, GL_STREAM_COPY);
-        info!("it worked!");
+        let mut output_buffer: GLuint = 0;
+        glGenBuffers(1, &mut output_buffer);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, output_buffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, output_buffer);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, (size_of::<GLuint>() * data.len()) as i64, null() as *const c_void, GL_DYNAMIC_READ);
+        info!("output_buffer worked!");
+
+        let program = glCreateProgram();
+        let shader = load_shader(COMPUTE_SHADER)?;
+        info!("load_shader worked!");
+
+        glAttachShader(program, shader);
+        glLinkProgram(program);
+        glUseProgram(program);
+        glDispatchCompute(data.len() as GLuint, 1, 1);
+        info!("glDispatchCompute worked!");
+
+        let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, data.len() as i64, GL_MAP_READ_BIT ) as *const GLuint;
+        info!("glMapBufferRange worked: {:?}", ptr);
+        glUnmapBuffer( GL_SHADER_STORAGE_BUFFER );
+        info!("glUnmapBuffer worked!");
+        let info = slice::from_raw_parts(ptr, data.len());
+        info!("hello {:?}", info);
+
+        glMemoryBarrier( GL_SHADER_STORAGE_BARRIER_BIT );
     }
     Ok(())
+}
+
+pub unsafe fn load_shader(shader_src: &str) -> Result<GLuint, Error> {
+    let shader = glCreateShader(GL_COMPUTE_SHADER);
+    if shader == 0 {
+        let err = glGetError();
+        return Err(anyhow!("Error creating shader: {}", err));
+    }
+    let shader_src = format!("{}\0", shader_src).as_str().as_ptr() as *const GLchar;
+    glShaderSource(shader, 1, &shader_src, null());
+    glCompileShader(shader);
+
+    let mut compiled: GLint = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &mut compiled);
+    if compiled == 0 {
+        let mut info_len: GLint = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &mut info_len);
+        if info_len > 1 {
+            let mut info_log = vec![0u8; info_len as usize];
+            glGetShaderInfoLog(shader, info_len, null_mut() as *mut GLsizei, info_log.as_ptr() as *mut u8);
+            let str = CString::new(info_log)?;
+            return Err(anyhow!("Error compiling shader: {}", str.to_str()?));
+        }
+        glDeleteShader(shader);
+        return Err(anyhow!("Error compiling shader!"));
+    }
+    return Ok(shader);
 }
