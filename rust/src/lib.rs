@@ -97,20 +97,20 @@ fn main(path: String) -> Result<(), Error> {
 
         // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
         let COMPUTE_SHADER = "#version 310 es\n\
-layout(local_size_x = 2, local_size_x = 2) in;\n\
+layout(local_size_x = 1, local_size_y = 1) in;\n\
 layout(std430) buffer;\n\
 layout(binding = 0) writeonly buffer Output {\n\
-    uint elements[2][2];\n\
+    uint elements[1300][1300];\n\
 } output_data;\n\
 layout(binding = 1) readonly buffer Input0 {\n\
-    uint elements[2][2];\n\
+    uint elements;\n\
 } input_data0;\n\
 void main()\n\
 {\n\
     uint x = gl_GlobalInvocationID.x;\n\
     uint y = gl_GlobalInvocationID.y;\n\
-    uint inval = input_data0.elements[y][x];\n\
-    uint outval = inval >> 16;
+    uint inval = input_data0.elements;\n\
+    uint outval = inval;
     output_data.elements[y][x] = outval;\n\
 }";
 
@@ -144,7 +144,7 @@ void main()\n\
         glAttachShader(program, shader);
         glLinkProgram(program);
         glUseProgram(program);
-        glDispatchCompute(width as u32, height as u32, 1);
+        glDispatchCompute(width as u32 / 2, height as u32, 1);
         info!("glDispatchCompute worked!");
 
         let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_size as i64, GL_MAP_READ_BIT ) as *const u8;
