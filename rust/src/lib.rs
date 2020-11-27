@@ -87,6 +87,14 @@ fn main(path: String) -> Result<(), Error> {
         let h = query_surface(display, surface, khronos_egl::HEIGHT).expect("Can't get HEIGHT!");
         info!("w={} h={}", w, h);
 
+        let out_px_cnt = (width * height) as usize; // Y plane only for now
+        let out_word_cnt = out_px_cnt / size_of::<u32>();
+        let out_byte_cnt = out_word_cnt * size_of::<u32>();
+        let in_px_per_word = 2;
+        let in_word_stride = width / in_px_per_word;
+        let out_px_per_word = 4;
+        let out_word_stride = width / out_px_per_word;
+
         // https://github.com/AlexCharlton/hello-modern-opengl/blob/master/hello-gl.c
         #[cfg(target_os = "android")]
             let ver = "300 es";
@@ -96,26 +104,35 @@ fn main(path: String) -> Result<(), Error> {
         info!("ver={}", ver);
 
         // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
-        let COMPUTE_SHADER = "#version 310 es\n\
+        let COMPUTE_SHADER = format!("#version 310 es\n\
 layout(local_size_x = 1, local_size_y = 1) in;\n\
 layout(std430) buffer;\n\
-layout(binding = 0) writeonly buffer Output {\n\
-    uint elements[1300][1300];\n\
-} output_data;\n\
-layout(binding = 1) readonly buffer Input0 {\n\
-    uint elements[1300][650];\n\
-} input_data0;\n\
-void main()\n\
-{\n\
+layout(binding = 0) writeonly buffer Output {{\n\
+    uint elements[{height}][{out_word_stride}];\n\
+}} output_data;\n\
+layout(binding = 1) readonly buffer Input0 {{\n\
+    uint elements[{height}][{in_word_stride}];\n\
+}} input_data0;\n\
+void main() {{\n\
+    uint out_px_per_word = {out_px_per_word}u;\n\
     uint y = gl_GlobalInvocationID.x;\n\
-    uint x = gl_GlobalInvocationID.y;\n\
-
-    uint shift = x % 2u == 0u ? 0u : 16u;
-    uint Y = (input_data0.elements[y][x / 2u] >> shift) & 0xFFu;\n\
-    uint argb = 255u << 24u | Y << 16u | Y << 8u | Y;
-
-    output_data.elements[y][x] = argb;\n\
-}";
+    uint x = gl_GlobalInvocationID.y * out_px_per_word;\n\
+\n\
+    uint out_word = 0u;\n\
+    for(uint i = 0u; i < out_px_per_word; i++) {{\n\
+        uint shift = (x + i) % 2u == 0u ? 0u : 16u;\n\
+        uint Y = (input_data0.elements[y][(x + i) / 2u] >> shift) & 0xFFu;\n\
+        out_word |= (Y << (i * 8u));\n\
+    }}\n\
+\n\
+    output_data.elements[y][gl_GlobalInvocationID.y] = out_word;\n\
+}}",
+                                     height = height,
+                                     in_word_stride = in_word_stride,
+                                     out_word_stride = out_word_stride,
+                                     out_px_per_word = out_px_per_word,
+        );
+        info!("shader={}", COMPUTE_SHADER);
 
         // texture
         let filename = format!("{}/thanksgiving.raw", path);
@@ -133,8 +150,6 @@ void main()\n\
         glBufferData(GL_SHADER_STORAGE_BUFFER, in_byte_cnt as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY);
         info!("input_buffer worked!");
 
-        let out_px_cnt = (width * height) as usize; // Y plane only for now
-        let out_byte_cnt = out_px_cnt * size_of::<u32>();
         let mut output_buffer: GLuint = 0;
         glGenBuffers(1, &mut output_buffer);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, output_buffer);
@@ -143,18 +158,19 @@ void main()\n\
         info!("output_buffer worked!");
 
         let program = glCreateProgram();
-        let shader = load_shader(COMPUTE_SHADER)?;
+        let shader = load_shader(COMPUTE_SHADER.as_str())?;
         info!("load_shader worked!");
 
         glAttachShader(program, shader);
         glLinkProgram(program);
         glUseProgram(program);
-        glDispatchCompute(width as u32, height as u32, 1);
+        glDispatchCompute(height as u32, out_word_stride as u32, 1);
         info!("glDispatchCompute worked!");
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-        let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_byte_cnt as i64, GL_MAP_READ_BIT ) as *const u8;
+        let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_byte_cnt as i64, GL_MAP_READ_BIT) as *const u8;
         info!("glMapBufferRange worked: {:?}", ptr);
-        glUnmapBuffer( GL_SHADER_STORAGE_BUFFER );
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
         info!("glUnmapBuffer worked!");
         let pixels = slice::from_raw_parts(ptr, out_byte_cnt as usize);
 
@@ -163,8 +179,6 @@ void main()\n\
         info!("Writing file {}...", path);
         let mut file = File::create(path)?;
         file.write_all(&pixels[..])?;
-
-        glMemoryBarrier( GL_SHADER_STORAGE_BARRIER_BIT );
     }
     Ok(())
 }
