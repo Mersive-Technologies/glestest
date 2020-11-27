@@ -110,7 +110,7 @@ void main()\n\
     uint y = gl_GlobalInvocationID.x;\n\
     uint x = gl_GlobalInvocationID.y;\n\
 
-    uint shift = x % 2u == 0u ? 24u : 8u;
+    uint shift = x % 2u == 0u ? 0u : 16u;
     uint Y = (input_data0.elements[y][x / 2u] >> shift) & 0xFFu;\n\
     uint argb = 255u << 24u | Y << 16u | Y << 8u | Y;
 
