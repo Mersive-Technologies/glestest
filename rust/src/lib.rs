@@ -103,13 +103,13 @@ layout(binding = 0) writeonly buffer Output {\n\
     uint elements[1300][1300];\n\
 } output_data;\n\
 layout(binding = 1) readonly buffer Input0 {\n\
-    uint elements;\n\
+    uint elements[1300][1300];\n\
 } input_data0;\n\
 void main()\n\
 {\n\
     uint x = gl_GlobalInvocationID.x;\n\
     uint y = gl_GlobalInvocationID.y;\n\
-    uint inval = input_data0.elements;\n\
+    uint inval = input_data0.elements[y][x];\n\
     uint outval = inval;
     output_data.elements[y][x] = outval;\n\
 }";
