@@ -209,7 +209,7 @@ void main() {{\n\
     uint px_per_word = {px_per_word}u;\n\
     uint out_x = gl_GlobalInvocationID.y * px_per_word;\n\
     uint out_y = gl_GlobalInvocationID.x;\n\
-    uint in_x = out_x * 2u;\n\
+    uint in_x = out_x;\n\
     uint in_y = out_y * 2u;\n\
 \n\
     uint u1 = ((input_data0.elements[in_y][in_x + 0u] >> 8) & 0xFFu);\n\
