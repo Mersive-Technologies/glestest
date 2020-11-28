@@ -12,16 +12,16 @@ use std::io::{Read, Write};
 use std::mem::size_of;
 use std::os::raw::c_char;
 use std::ptr::{null, null_mut};
+use std::slice;
 
 use anyhow::{anyhow, Context, Error};
-use gles31_sys::{GL_COMPILE_STATUS, GL_COMPUTE_SHADER, GL_INFO_LOG_LENGTH, GL_SHADER_STORAGE_BUFFER, GL_STREAM_COPY, glBindBuffer, glBindBufferBase, glBufferData, GLchar, glCompileShader, glCreateProgram, glCreateShader, glDeleteShader, glGenBuffers, glGetError, glGetShaderInfoLog, glGetShaderiv, GLint, glShaderSource, GLsizei, GLuint, glAttachShader, glLinkProgram, glUseProgram, glDispatchCompute, glMapBufferRange, GL_READ_ONLY, glUnmapBuffer, glMemoryBarrier, GL_SHADER_STORAGE_BARRIER_BIT, GL_MAP_READ_BIT, GL_DYNAMIC_READ};
+use gles31_sys::{GL_COMPILE_STATUS, GL_COMPUTE_SHADER, GL_DYNAMIC_READ, GL_INFO_LOG_LENGTH, GL_MAP_READ_BIT, GL_READ_ONLY, GL_SHADER_STORAGE_BARRIER_BIT, GL_SHADER_STORAGE_BUFFER, GL_STREAM_COPY, glAttachShader, glBindBuffer, glBindBufferBase, glBufferData, GLchar, glCompileShader, glCreateProgram, glCreateShader, glDeleteShader, glDispatchCompute, glGenBuffers, glGetError, glGetShaderInfoLog, glGetShaderiv, GLint, glLinkProgram, glMapBufferRange, glMemoryBarrier, glShaderSource, GLsizei, GLuint, glUnmapBuffer, glUseProgram};
 use jni::JNIEnv;
 use jni::objects::{JObject, JString};
 use khronos_egl::{choose_config, choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, create_pixmap_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, GL_COLORSPACE, GL_COLORSPACE_SRGB, initialize, make_current, NO_CONTEXT, query_surface, swap_buffers};
 use log::error;
 use log::info;
 use log::Level;
-use std::slice;
 
 #[no_mangle]
 pub extern fn Java_com_mersive_glconvert_MainActivity_init(
@@ -49,7 +49,7 @@ fn main(path: String) -> Result<(), Error> {
         info!("EGL version={:?}", res);
 
         info!("Choosing config...");
-        let config = choose_first_config(display, &[ khronos_egl::NONE ])
+        let config = choose_first_config(display, &[khronos_egl::NONE])
             .context("unable to choose an EGL configuration")?
             .ok_or(anyhow!("No available config!"))?;
         let attributes = [
@@ -61,14 +61,9 @@ fn main(path: String) -> Result<(), Error> {
         info!("EGL context={:?}", ctx);
         make_current(display, None, None, Some(ctx)).expect("Can't make current");
 
-        // create surface
+        // load input image
         let width = 1300;
         let height = 1300;
-        let (out_byte_cnt, out_word_stride, shader) = yuy2_to_y8(width, height)?;
-
-        info!("load_shader worked!");
-
-        // texture
         let filename = format!("{}/thanksgiving.raw", path);
         let mut f = File::open(&filename).context("no file found")?;
         let metadata = std::fs::metadata(&filename).context("unable to read metadata")?;
@@ -76,28 +71,17 @@ fn main(path: String) -> Result<(), Error> {
         f.read(&mut data).context("buffer overflow")?;
         info!("Read {} byte image", data.len());
 
-        let in_byte_cnt = data.len();
-        let mut input_buffer: GLuint = 0;
-        glGenBuffers(1, &mut input_buffer);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, input_buffer);
+        // Create shaders
+        let (out_byte_cnt, out_word_stride, yuy2_to_y8_prog) = yuy2_to_y8(width, height)?;
+
+        // create buffers
+        let input_buffer = create_input_buffer(data)?;
+        let output_buffer = create_output_buffer(out_byte_cnt)?;
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, input_buffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, in_byte_cnt as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY);
-        info!("input_buffer worked!");
-
-        let mut output_buffer: GLuint = 0;
-        glGenBuffers(1, &mut output_buffer);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, output_buffer);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, output_buffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, out_byte_cnt as i64, null() as *const c_void, GL_DYNAMIC_READ);
-        info!("output_buffer worked!");
 
-        let program = glCreateProgram();
-        glAttachShader(program, shader);
-        glLinkProgram(program);
-        glUseProgram(program);
-        glDispatchCompute(height as u32, out_word_stride as u32, 1);
-        info!("glDispatchCompute worked!");
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        // Convert Y plane
+        run_program(yuy2_to_y8_prog, out_word_stride, height);
 
         let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_byte_cnt as i64, GL_MAP_READ_BIT) as *const u8;
         info!("glMapBufferRange worked: {:?}", ptr);
@@ -114,7 +98,41 @@ fn main(path: String) -> Result<(), Error> {
     Ok(())
 }
 
-fn yuy2_to_y8(width: i32, height: i32) -> Result<(usize, i32, u32), Error> {
+fn run_program(program: u32, x_sz: usize, y_sz: usize) {
+    unsafe {
+        glUseProgram(program);
+        glDispatchCompute(y_sz as u32, x_sz as u32, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+}
+
+fn create_output_buffer(out_byte_cnt: usize) -> Result<u32, Error> {
+    let mut buf: GLuint = 0;
+    unsafe {
+        glGenBuffers(1, &mut buf);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, out_byte_cnt as i64, null() as *const c_void, GL_DYNAMIC_READ);
+    }
+    if buf == 0 {
+        return Err(anyhow!("Couldn't create output buffer!"));
+    }
+    Ok(buf)
+}
+
+fn create_input_buffer(mut data: Vec<u8>) -> Result<u32, Error> {
+    let mut buf: GLuint = 0;
+    unsafe {
+        glGenBuffers(1, &mut buf);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, data.len() as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY);
+    }
+    if buf == 0 {
+        return Err(anyhow!("Couldn't create input buffer!"));
+    }
+    Ok(buf)
+}
+
+fn yuy2_to_y8(width: usize, height: usize) -> Result<(usize, usize, u32), Error> {
     let out_px_cnt = (width * height) as usize; // Y plane only for now
     let out_word_cnt = out_px_cnt / size_of::<u32>();
     let out_byte_cnt = out_word_cnt * size_of::<u32>();
@@ -153,8 +171,13 @@ void main() {{\n\
                                  out_px_per_word = out_px_per_word,
     );
     info!("shader={}", COMPUTE_SHADER);
-    let shader = unsafe { load_shader(COMPUTE_SHADER.as_str())? };
-    Ok((out_byte_cnt, out_word_stride, shader))
+    unsafe {
+        let shader = load_shader(COMPUTE_SHADER.as_str())?;
+        let program = glCreateProgram();
+        glAttachShader(program, shader);
+        glLinkProgram(program);
+        Ok((out_byte_cnt, out_word_stride, program))
+    }
 }
 
 pub unsafe fn load_shader(shader_src: &str) -> Result<GLuint, Error> {
