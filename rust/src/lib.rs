@@ -57,27 +57,15 @@ fn main(path: String) -> Result<(), Error> {
 
         // Create shaders
         let (out_byte_cnt, out_word_stride, yuy2_to_y8_prog) = yuy2_to_y8(width, height)?;
-
-        // create buffers
-        let input_buffer = create_input_buffer(data)?;
-        let output_buffer = create_output_buffer(out_byte_cnt)?;
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, input_buffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, output_buffer);
-
-        // Convert Y plane
-        run_program(yuy2_to_y8_prog, out_word_stride, height);
-
-        let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_byte_cnt as i64, GL_MAP_READ_BIT) as *const u8;
-        info!("glMapBufferRange worked: {:?}", ptr);
-        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-        info!("glUnmapBuffer worked!");
-        let pixels = slice::from_raw_parts(ptr, out_byte_cnt as usize);
+        let _input_buffer = create_input_buffer(data, 0)?;
+        let _output_buffer = create_output_buffer(out_byte_cnt, 1)?;
+        let y_plane = run_program(yuy2_to_y8_prog, out_word_stride, height, out_byte_cnt);
 
         // Save
         let path = format!("{}/pic0.raw", path);
         info!("Writing file {}...", path);
         let mut file = File::create(path)?;
-        file.write_all(&pixels[..])?;
+        file.write_all(&y_plane[..])?;
     }
     Ok(())
 }
@@ -100,36 +88,41 @@ fn gl_init() -> Result<(), Error> {
     Ok(())
 }
 
-fn run_program(program: u32, x_sz: usize, y_sz: usize) {
+fn run_program<'a>(program: u32, x_sz: usize, y_sz: usize, out_byte_cnt: usize) -> &'a [u8] {
     unsafe {
         glUseProgram(program);
         glDispatchCompute(y_sz as u32, x_sz as u32, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_byte_cnt as i64, GL_MAP_READ_BIT) as *const u8;
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+        slice::from_raw_parts(ptr, out_byte_cnt as usize)
     }
 }
 
-fn create_output_buffer(out_byte_cnt: usize) -> Result<u32, Error> {
+fn create_input_buffer(mut data: Vec<u8>, bind_idx: usize) -> Result<u32, Error> {
     let mut buf: GLuint = 0;
     unsafe {
         glGenBuffers(1, &mut buf);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, out_byte_cnt as i64, null() as *const c_void, GL_DYNAMIC_READ);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, data.len() as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY); // TODO: STREAM_DRAW?
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind_idx as u32, buf);
     }
     if buf == 0 {
-        return Err(anyhow!("Couldn't create output buffer!"));
+        return Err(anyhow!("Couldn't create input buffer!"));
     }
     Ok(buf)
 }
 
-fn create_input_buffer(mut data: Vec<u8>) -> Result<u32, Error> {
+fn create_output_buffer(length: usize, bind_idx: usize) -> Result<u32, Error> {
     let mut buf: GLuint = 0;
     unsafe {
         glGenBuffers(1, &mut buf);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, data.len() as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, length as i64, null() as *const c_void, GL_DYNAMIC_READ);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind_idx as u32, buf);
     }
     if buf == 0 {
-        return Err(anyhow!("Couldn't create input buffer!"));
+        return Err(anyhow!("Couldn't create output buffer!"));
     }
     Ok(buf)
 }
