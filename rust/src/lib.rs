@@ -61,7 +61,7 @@ fn main(path: String) -> Result<(), Error> {
         let _output_buffer = create_output_buffer(out_byte_cnt, 1)?;
         let y_plane = run_program(yuy2_to_y8, out_word_stride, height, out_byte_cnt);
 
-        // Extract Y plane
+        // Extract UV plane
         let (out_byte_cnt, out_word_stride, yuy2_to_uv) = create_yuy2_to_uv(width, height)?;
         let _input_buffer = create_input_buffer(&data, 0)?;
         let _output_buffer = create_output_buffer(out_byte_cnt, 1)?;
