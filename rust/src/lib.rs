@@ -43,22 +43,15 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
 
 fn main(path: String) -> Result<(), Error> {
     unsafe {
-        // let args: Vec<String> = env::args().collect();
-        let idx = 0; //args.get(1).unwrap().parse::<usize>().unwrap();
-
         // egl init
         let display = get_display(DEFAULT_DISPLAY).context("Need a display!")?;
         let res = initialize(display).context("Can't initialize")?;
         info!("EGL version={:?}", res);
-        let mut configs: Vec<Config> = Vec::with_capacity(100);
+
         info!("Choosing config...");
-        let attributes = [
-            khronos_egl::NONE
-        ];
-        choose_config(display, &attributes, &mut configs)
-            .context("unable to choose an EGL configuration")?;
-        info!("count={}", configs.len());
-        let config = configs.remove(idx);
+        let config = choose_first_config(display, &[ khronos_egl::NONE ])
+            .context("unable to choose an EGL configuration")?
+            .ok_or(anyhow!("No available config!"))?;
         let attributes = [
             khronos_egl::CONTEXT_MAJOR_VERSION, 3,
             khronos_egl::CONTEXT_MINOR_VERSION, 1,
@@ -66,27 +59,11 @@ fn main(path: String) -> Result<(), Error> {
         ];
         let ctx = create_context(display, config, None, &attributes).context("Need a context!")?;
         info!("EGL context={:?}", ctx);
+        make_current(display, None, None, Some(ctx)).expect("Can't make current");
 
         // create surface
         let width = 1300;
         let height = 1300;
-        let mut attributes = vec![
-            khronos_egl::WIDTH, width.clone(),
-            khronos_egl::HEIGHT, height.clone(),
-        ];
-        #[cfg(os = "linux")]
-            {
-                attributes.extend_from_slice(&[khronos_egl::TEXTURE_FORMAT, khronos_egl::TEXTURE_RGBA]);
-                attributes.extend_from_slice(&[khronos_egl::TEXTURE_TARGET, khronos_egl::TEXTURE_2D]);
-            }
-        attributes.push(khronos_egl::NONE);
-        let surface = create_pbuffer_surface(display, config, &attributes).expect("Couldn't create pbuffer");
-        // create_pixmap_surface(display, config);
-        make_current(display, Some(surface.clone()), Some(surface.clone()), Some(ctx)).expect("Can't make current");
-        let w = query_surface(display, surface, khronos_egl::WIDTH).expect("Can't get width!");
-        let h = query_surface(display, surface, khronos_egl::HEIGHT).expect("Can't get HEIGHT!");
-        info!("w={} h={}", w, h);
-
         let out_px_cnt = (width * height) as usize; // Y plane only for now
         let out_word_cnt = out_px_cnt / size_of::<u32>();
         let out_byte_cnt = out_word_cnt * size_of::<u32>();
@@ -94,14 +71,6 @@ fn main(path: String) -> Result<(), Error> {
         let in_word_stride = width / in_px_per_word;
         let out_px_per_word = 4;
         let out_word_stride = width / out_px_per_word;
-
-        // https://github.com/AlexCharlton/hello-modern-opengl/blob/master/hello-gl.c
-        #[cfg(target_os = "android")]
-            let ver = "300 es";
-        #[cfg(target_os = "linux")]
-            let ver = "330";
-
-        info!("ver={}", ver);
 
         // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
         let COMPUTE_SHADER = format!("#version 310 es\n\
@@ -175,7 +144,7 @@ void main() {{\n\
         let pixels = slice::from_raw_parts(ptr, out_byte_cnt as usize);
 
         // Save
-        let path = format!("{}/pic{}.raw", path, idx);
+        let path = format!("{}/pic0.raw", path);
         info!("Writing file {}...", path);
         let mut file = File::create(path)?;
         file.write_all(&pixels[..])?;
