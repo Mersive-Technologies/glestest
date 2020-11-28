@@ -55,17 +55,24 @@ fn main(path: String) -> Result<(), Error> {
         file.read(&mut data).context("buffer overflow")?;
         info!("Read {} byte image", data.len());
 
-        // Create shaders
-        let (out_byte_cnt, out_word_stride, yuy2_to_y8_prog) = yuy2_to_y8(width, height)?;
-        let _input_buffer = create_input_buffer(data, 0)?;
+        // Extract Y plane
+        let (out_byte_cnt, out_word_stride, yuy2_to_y8) = create_yuy2_to_y8(width, height)?;
+        let _input_buffer = create_input_buffer(&data, 0)?;
         let _output_buffer = create_output_buffer(out_byte_cnt, 1)?;
-        let y_plane = run_program(yuy2_to_y8_prog, out_word_stride, height, out_byte_cnt);
+        let y_plane = run_program(yuy2_to_y8, out_word_stride, height, out_byte_cnt);
+
+        // Extract Y plane
+        let (out_byte_cnt, out_word_stride, yuy2_to_uv) = create_yuy2_to_uv(width, height)?;
+        let _input_buffer = create_input_buffer(&data, 0)?;
+        let _output_buffer = create_output_buffer(out_byte_cnt, 1)?;
+        let uv_plane = run_program(yuy2_to_uv, out_word_stride, height, out_byte_cnt);
 
         // Save
         let path = format!("{}/pic0.raw", path);
         info!("Writing file {}...", path);
         let mut file = File::create(path)?;
         file.write_all(&y_plane[..])?;
+        file.write_all(&uv_plane[..])?;
     }
     Ok(())
 }
@@ -99,7 +106,7 @@ fn run_program<'a>(program: u32, x_sz: usize, y_sz: usize, out_byte_cnt: usize) 
     }
 }
 
-fn create_input_buffer(mut data: Vec<u8>, bind_idx: usize) -> Result<u32, Error> {
+fn create_input_buffer(mut data: &Vec<u8>, bind_idx: usize) -> Result<u32, Error> {
     let mut buf: GLuint = 0;
     unsafe {
         glGenBuffers(1, &mut buf);
@@ -127,13 +134,14 @@ fn create_output_buffer(length: usize, bind_idx: usize) -> Result<u32, Error> {
     Ok(buf)
 }
 
-fn yuy2_to_y8(width: usize, height: usize) -> Result<(usize, usize, u32), Error> {
+fn create_yuy2_to_y8(width: usize, height: usize) -> Result<(usize, usize, u32), Error> {
+    let in_px_per_word = 2;
+    let out_px_per_word = 4;
+
     let out_px_cnt = (width * height) as usize; // Y plane only for now
     let out_word_cnt = out_px_cnt / size_of::<u32>();
     let out_byte_cnt = out_word_cnt * size_of::<u32>();
-    let in_px_per_word = 2;
     let in_word_stride = width / in_px_per_word;
-    let out_px_per_word = 4;
     let out_word_stride = width / out_px_per_word;
 
     // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
@@ -165,7 +173,60 @@ void main() {{\n\
                                  out_word_stride = out_word_stride,
                                  out_px_per_word = out_px_per_word,
     );
-    info!("shader={}", COMPUTE_SHADER);
+    info!("y_shader={}", COMPUTE_SHADER);
+    unsafe {
+        let shader = load_shader(COMPUTE_SHADER.as_str())?;
+        let program = glCreateProgram();
+        glAttachShader(program, shader);
+        glLinkProgram(program);
+        Ok((out_byte_cnt, out_word_stride, program))
+    }
+}
+
+fn create_yuy2_to_uv(in_width: usize, in_height: usize) -> Result<(usize, usize, u32), Error> {
+    let scale = 2; // uv plane is 1/2 size of input
+    let bytes_per_px = 2; // u & v
+    let px_per_word = size_of::<GLuint>() / bytes_per_px;
+
+    let out_width = in_width / scale;
+    let out_height = in_height / scale;
+    let out_px_cnt = (out_width * out_height) as usize;
+    let out_byte_cnt = out_px_cnt * bytes_per_px;
+    let in_word_stride = in_width / px_per_word;
+    let out_word_stride = out_width / px_per_word;
+
+    // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
+    let COMPUTE_SHADER = format!("#version 310 es\n\
+layout(local_size_x = 1, local_size_y = 1) in;\n\
+layout(std430) buffer;\n\
+layout(binding = 0) readonly buffer Input0 {{\n\
+    uint elements[{in_height}][{in_word_stride}];\n\
+}} input_data0;\n\
+layout(binding = 1) writeonly buffer Output {{\n\
+    uint elements[{out_height}][{out_word_stride}];\n\
+}} output_data;\n\
+void main() {{\n\
+    uint px_per_word = {px_per_word}u;\n\
+    uint out_x = gl_GlobalInvocationID.y * px_per_word;\n\
+    uint out_y = gl_GlobalInvocationID.x;\n\
+    uint in_x = out_x * 2u;\n\
+    uint in_y = out_y * 2u;\n\
+\n\
+    uint u1 = ((input_data0.elements[in_y][in_x + 0u] >> 8) & 0xFFu);\n\
+    uint v1 = ((input_data0.elements[in_y][in_x + 0u] >> 24) & 0xFFu);\n\
+    uint u2 = ((input_data0.elements[in_y][in_x + 1u] >> 8) & 0xFFu);\n\
+    uint v2 = ((input_data0.elements[in_y][in_x + 1u] >> 24) & 0xFFu);\n\
+    uint out_word = u1 | v1 << 8 | u2 << 16 | v2 << 24;\n\
+\n\
+    output_data.elements[out_y][gl_GlobalInvocationID.y] = out_word;\n\
+}}",
+                                 in_height = in_height,
+                                 out_height = out_height,
+                                 in_word_stride = in_word_stride,
+                                 out_word_stride = out_word_stride,
+                                 px_per_word = px_per_word,
+    );
+    info!("uv_shader={}", COMPUTE_SHADER);
     unsafe {
         let shader = load_shader(COMPUTE_SHADER.as_str())?;
         let program = glCreateProgram();
