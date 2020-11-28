@@ -64,44 +64,9 @@ fn main(path: String) -> Result<(), Error> {
         // create surface
         let width = 1300;
         let height = 1300;
-        let out_px_cnt = (width * height) as usize; // Y plane only for now
-        let out_word_cnt = out_px_cnt / size_of::<u32>();
-        let out_byte_cnt = out_word_cnt * size_of::<u32>();
-        let in_px_per_word = 2;
-        let in_word_stride = width / in_px_per_word;
-        let out_px_per_word = 4;
-        let out_word_stride = width / out_px_per_word;
+        let (out_byte_cnt, out_word_stride, shader) = yuy2_to_y8(width, height)?;
 
-        // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
-        let COMPUTE_SHADER = format!("#version 310 es\n\
-layout(local_size_x = 1, local_size_y = 1) in;\n\
-layout(std430) buffer;\n\
-layout(binding = 0) writeonly buffer Output {{\n\
-    uint elements[{height}][{out_word_stride}];\n\
-}} output_data;\n\
-layout(binding = 1) readonly buffer Input0 {{\n\
-    uint elements[{height}][{in_word_stride}];\n\
-}} input_data0;\n\
-void main() {{\n\
-    uint out_px_per_word = {out_px_per_word}u;\n\
-    uint y = gl_GlobalInvocationID.x;\n\
-    uint x = gl_GlobalInvocationID.y * out_px_per_word;\n\
-\n\
-    uint out_word = 0u;\n\
-    for(uint i = 0u; i < out_px_per_word; i++) {{\n\
-        uint shift = (x + i) % 2u == 0u ? 0u : 16u;\n\
-        uint Y = (input_data0.elements[y][(x + i) / 2u] >> shift) & 0xFFu;\n\
-        out_word |= (Y << (i * 8u));\n\
-    }}\n\
-\n\
-    output_data.elements[y][gl_GlobalInvocationID.y] = out_word;\n\
-}}",
-                                     height = height,
-                                     in_word_stride = in_word_stride,
-                                     out_word_stride = out_word_stride,
-                                     out_px_per_word = out_px_per_word,
-        );
-        info!("shader={}", COMPUTE_SHADER);
+        info!("load_shader worked!");
 
         // texture
         let filename = format!("{}/thanksgiving.raw", path);
@@ -127,9 +92,6 @@ void main() {{\n\
         info!("output_buffer worked!");
 
         let program = glCreateProgram();
-        let shader = load_shader(COMPUTE_SHADER.as_str())?;
-        info!("load_shader worked!");
-
         glAttachShader(program, shader);
         glLinkProgram(program);
         glUseProgram(program);
@@ -150,6 +112,49 @@ void main() {{\n\
         file.write_all(&pixels[..])?;
     }
     Ok(())
+}
+
+fn yuy2_to_y8(width: i32, height: i32) -> Result<(usize, i32, u32), Error> {
+    let out_px_cnt = (width * height) as usize; // Y plane only for now
+    let out_word_cnt = out_px_cnt / size_of::<u32>();
+    let out_byte_cnt = out_word_cnt * size_of::<u32>();
+    let in_px_per_word = 2;
+    let in_word_stride = width / in_px_per_word;
+    let out_px_per_word = 4;
+    let out_word_stride = width / out_px_per_word;
+
+    // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
+    let COMPUTE_SHADER = format!("#version 310 es\n\
+layout(local_size_x = 1, local_size_y = 1) in;\n\
+layout(std430) buffer;\n\
+layout(binding = 0) writeonly buffer Output {{\n\
+    uint elements[{height}][{out_word_stride}];\n\
+}} output_data;\n\
+layout(binding = 1) readonly buffer Input0 {{\n\
+    uint elements[{height}][{in_word_stride}];\n\
+}} input_data0;\n\
+void main() {{\n\
+    uint out_px_per_word = {out_px_per_word}u;\n\
+    uint y = gl_GlobalInvocationID.x;\n\
+    uint x = gl_GlobalInvocationID.y * out_px_per_word;\n\
+\n\
+    uint out_word = 0u;\n\
+    for(uint i = 0u; i < out_px_per_word; i++) {{\n\
+        uint shift = (x + i) % 2u == 0u ? 0u : 16u;\n\
+        uint Y = (input_data0.elements[y][(x + i) / 2u] >> shift) & 0xFFu;\n\
+        out_word |= (Y << (i * 8u));\n\
+    }}\n\
+\n\
+    output_data.elements[y][gl_GlobalInvocationID.y] = out_word;\n\
+}}",
+                                 height = height,
+                                 in_word_stride = in_word_stride,
+                                 out_word_stride = out_word_stride,
+                                 out_px_per_word = out_px_per_word,
+    );
+    info!("shader={}", COMPUTE_SHADER);
+    let shader = unsafe { load_shader(COMPUTE_SHADER.as_str())? };
+    Ok((out_byte_cnt, out_word_stride, shader))
 }
 
 pub unsafe fn load_shader(shader_src: &str) -> Result<GLuint, Error> {
