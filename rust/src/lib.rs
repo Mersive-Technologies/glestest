@@ -43,32 +43,16 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
 
 fn main(path: String) -> Result<(), Error> {
     unsafe {
-        // egl init
-        let display = get_display(DEFAULT_DISPLAY).context("Need a display!")?;
-        let res = initialize(display).context("Can't initialize")?;
-        info!("EGL version={:?}", res);
-
-        info!("Choosing config...");
-        let config = choose_first_config(display, &[khronos_egl::NONE])
-            .context("unable to choose an EGL configuration")?
-            .ok_or(anyhow!("No available config!"))?;
-        let attributes = [
-            khronos_egl::CONTEXT_MAJOR_VERSION, 3,
-            khronos_egl::CONTEXT_MINOR_VERSION, 1,
-            khronos_egl::NONE
-        ];
-        let ctx = create_context(display, config, None, &attributes).context("Need a context!")?;
-        info!("EGL context={:?}", ctx);
-        make_current(display, None, None, Some(ctx)).expect("Can't make current");
+        gl_init().context("Couldn't init OpenGL!");
 
         // load input image
         let width = 1300;
         let height = 1300;
         let filename = format!("{}/thanksgiving.raw", path);
-        let mut f = File::open(&filename).context("no file found")?;
+        let mut file = File::open(&filename).context("no file found")?;
         let metadata = std::fs::metadata(&filename).context("unable to read metadata")?;
         let mut data = vec![0; metadata.len() as usize];
-        f.read(&mut data).context("buffer overflow")?;
+        file.read(&mut data).context("buffer overflow")?;
         info!("Read {} byte image", data.len());
 
         // Create shaders
@@ -77,8 +61,8 @@ fn main(path: String) -> Result<(), Error> {
         // create buffers
         let input_buffer = create_input_buffer(data)?;
         let output_buffer = create_output_buffer(out_byte_cnt)?;
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, input_buffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, output_buffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, input_buffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, output_buffer);
 
         // Convert Y plane
         run_program(yuy2_to_y8_prog, out_word_stride, height);
@@ -95,6 +79,24 @@ fn main(path: String) -> Result<(), Error> {
         let mut file = File::create(path)?;
         file.write_all(&pixels[..])?;
     }
+    Ok(())
+}
+
+fn gl_init() -> Result<(), Error> {
+    let display = get_display(DEFAULT_DISPLAY).context("Need a display!")?;
+    let res = initialize(display).context("Can't initialize")?;
+    info!("EGL version={:?}", res);
+
+    let config = choose_first_config(display, &[khronos_egl::NONE])
+        .context("unable to choose an EGL configuration")?
+        .ok_or(anyhow!("No available config!"))?;
+    let attributes = [
+        khronos_egl::CONTEXT_MAJOR_VERSION, 3,
+        khronos_egl::CONTEXT_MINOR_VERSION, 1,
+        khronos_egl::NONE
+    ];
+    let ctx = create_context(display, config, None, &attributes).context("Need a context!")?;
+    make_current(display, None, None, Some(ctx)).expect("Can't make current");
     Ok(())
 }
 
@@ -145,12 +147,12 @@ fn yuy2_to_y8(width: usize, height: usize) -> Result<(usize, usize, u32), Error>
     let COMPUTE_SHADER = format!("#version 310 es\n\
 layout(local_size_x = 1, local_size_y = 1) in;\n\
 layout(std430) buffer;\n\
-layout(binding = 0) writeonly buffer Output {{\n\
-    uint elements[{height}][{out_word_stride}];\n\
-}} output_data;\n\
-layout(binding = 1) readonly buffer Input0 {{\n\
+layout(binding = 0) readonly buffer Input0 {{\n\
     uint elements[{height}][{in_word_stride}];\n\
 }} input_data0;\n\
+layout(binding = 1) writeonly buffer Output {{\n\
+    uint elements[{height}][{out_word_stride}];\n\
+}} output_data;\n\
 void main() {{\n\
     uint out_px_per_word = {out_px_per_word}u;\n\
     uint y = gl_GlobalInvocationID.x;\n\
