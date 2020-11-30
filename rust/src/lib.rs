@@ -18,7 +18,7 @@ use anyhow::{anyhow, Context, Error};
 use gles31_sys::{GL_COMPILE_STATUS, GL_COMPUTE_SHADER, GL_DYNAMIC_READ, GL_INFO_LOG_LENGTH, GL_MAP_READ_BIT, GL_READ_ONLY, GL_SHADER_STORAGE_BARRIER_BIT, GL_SHADER_STORAGE_BUFFER, GL_STREAM_COPY, glAttachShader, glBindBuffer, glBindBufferBase, glBufferData, GLchar, glCompileShader, glCreateProgram, glCreateShader, glDeleteShader, glDispatchCompute, glGenBuffers, glGetError, glGetShaderInfoLog, glGetShaderiv, GLint, glLinkProgram, glMapBufferRange, glMemoryBarrier, glShaderSource, GLsizei, GLuint, glUnmapBuffer, glUseProgram};
 use jni::JNIEnv;
 use jni::objects::{JObject, JString};
-use khronos_egl::{choose_config, choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, create_pixmap_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, GL_COLORSPACE, GL_COLORSPACE_SRGB, initialize, make_current, NO_CONTEXT, query_surface, swap_buffers};
+use khronos_egl::{choose_config, choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, create_pixmap_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, GL_COLORSPACE, GL_COLORSPACE_SRGB, initialize, make_current, NO_CONTEXT, query_surface, swap_buffers, EGLContext};
 use log::error;
 use log::info;
 use log::Level;
@@ -33,51 +33,82 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
     info!("Hello, Rust!");
 
     let path: String = env.get_string(path).unwrap().into();
-    let res = main(path);
-    if res.is_err() {
-        error!("Error running rust: {:?}", res.unwrap());
-    } else {
-        info!("Converted image!");
-    }
+    let converter = GlColorConverter::new(1300, 1300).unwrap();
+
+    let filename = format!("{}/thanksgiving.raw", path);
+    let mut file = File::open(&filename).context("no file found").unwrap();
+    let metadata = std::fs::metadata(&filename).context("unable to read metadata").unwrap();
+
+    // load input image
+    let mut data = vec![0; metadata.len() as usize];
+    file.read(&mut data).context("buffer overflow").unwrap();
+    info!("Read {} byte image", data.len());
+
+    let out = converter.convert_frame(data).unwrap();
+
+    // Save
+    let path = format!("{}/pic0.raw", path);
+    info!("Writing file {}...", path);
+    let mut file = File::create(path).unwrap();
+    file.write_all(&out).unwrap();
 }
 
-fn main(path: String) -> Result<(), Error> {
-    unsafe {
-        gl_init().context("Couldn't init OpenGL!");
+struct GlColorConverter {
+    width: usize, height: usize,
+    ctx: khronos_egl::Context,
 
-        // load input image
-        let width = 1300;
-        let height = 1300;
-        let filename = format!("{}/thanksgiving.raw", path);
-        let mut file = File::open(&filename).context("no file found")?;
-        let metadata = std::fs::metadata(&filename).context("unable to read metadata")?;
-        let mut data = vec![0; metadata.len() as usize];
-        file.read(&mut data).context("buffer overflow")?;
-        info!("Read {} byte image", data.len());
+}
+
+impl GlColorConverter  {
+    pub fn new(width: usize, height: usize) -> Result<GlColorConverter, Error> {
+        let ctx = gl_init().context("Couldn't init OpenGL!")?;
+
+        Ok(GlColorConverter {
+            width,
+            height,
+            ctx,
+        })
+    }
+
+    pub fn convert_frame(&self, src_frame: Vec<u8>) -> Result<Vec<u8>, Error> {
+        let (y_out_byte_cnt, y_out_word_stride, yuy2_to_y8) = create_yuy2_to_y8(self.width, self.height)?;
+        let (uv_out_byte_cnt, uv_out_word_stride, yuy2_to_uv) = create_yuy2_to_uv(self.width, self.height)?;
+        let mut output_frame = Vec::with_capacity(y_out_byte_cnt + uv_out_byte_cnt);
+        let (y_slice, uv_slice) = output_frame.split_at_mut(y_out_byte_cnt);
 
         // Extract Y plane
-        let (out_byte_cnt, out_word_stride, yuy2_to_y8) = create_yuy2_to_y8(width, height)?;
-        let _input_buffer = create_input_buffer(&data, 0)?;
-        let _output_buffer = create_output_buffer(out_byte_cnt, 1)?;
-        let y_plane = run_program(yuy2_to_y8, out_word_stride, height, out_byte_cnt);
+        let _input_buffer = create_input_buffer(&src_frame, 0)?;
+        let _output_buffer = create_output_buffer(y_out_byte_cnt, 1)?;
+        self.run_program(yuy2_to_y8, y_out_word_stride, y_slice);
 
         // Extract UV plane
-        let (out_byte_cnt, out_word_stride, yuy2_to_uv) = create_yuy2_to_uv(width, height)?;
-        let _input_buffer = create_input_buffer(&data, 0)?;
-        let _output_buffer = create_output_buffer(out_byte_cnt, 1)?;
-        let uv_plane = run_program(yuy2_to_uv, out_word_stride, height, out_byte_cnt);
+        let _input_buffer = create_input_buffer(&src_frame, 0)?;
+        let _output_buffer = create_output_buffer(uv_out_byte_cnt, 1)?;
+        self.run_program(yuy2_to_uv, uv_out_word_stride, uv_slice);
 
-        // Save
-        let path = format!("{}/pic0.raw", path);
-        info!("Writing file {}...", path);
-        let mut file = File::create(path)?;
-        file.write_all(&y_plane[..])?;
-        file.write_all(&uv_plane[..])?;
+        Ok(output_frame)
     }
-    Ok(())
+
+    fn run_program(&self, program: u32, x_sz: usize, mut out_slice: & mut [u8]) {
+        unsafe {
+            glUseProgram(program);
+            glDispatchCompute(self.height as u32, x_sz as u32, 1);
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+            let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_slice.len() as i64, GL_MAP_READ_BIT) as *const u8;
+            let slice = slice::from_raw_parts(ptr, out_slice.len());
+            out_slice.write_all(slice);
+            glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+        }
+    }
 }
 
-fn gl_init() -> Result<(), Error> {
+impl Drop for GlColorConverter {
+    fn drop(&mut self) {
+        unimplemented!()
+    }
+}
+
+fn gl_init() -> Result<khronos_egl::Context, Error> {
     let display = get_display(DEFAULT_DISPLAY).context("Need a display!")?;
     let res = initialize(display).context("Can't initialize")?;
     info!("EGL version={:?}", res);
@@ -91,19 +122,8 @@ fn gl_init() -> Result<(), Error> {
         khronos_egl::NONE
     ];
     let ctx = create_context(display, config, None, &attributes).context("Need a context!")?;
-    make_current(display, None, None, Some(ctx)).expect("Can't make current");
-    Ok(())
-}
-
-fn run_program<'a>(program: u32, x_sz: usize, y_sz: usize, out_byte_cnt: usize) -> &'a [u8] {
-    unsafe {
-        glUseProgram(program);
-        glDispatchCompute(y_sz as u32, x_sz as u32, 1);
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-        let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_byte_cnt as i64, GL_MAP_READ_BIT) as *const u8;
-        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-        slice::from_raw_parts(ptr, out_byte_cnt as usize)
-    }
+    make_current(display, None, None, Some(ctx.clone())).expect("Can't make current");
+    Ok(ctx)
 }
 
 fn create_input_buffer(mut data: &Vec<u8>, bind_idx: usize) -> Result<u32, Error> {
