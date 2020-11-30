@@ -15,10 +15,10 @@ use std::ptr::{null, null_mut};
 use std::slice;
 
 use anyhow::{anyhow, Context, Error};
-use gles31_sys::{GL_COMPILE_STATUS, GL_COMPUTE_SHADER, GL_DYNAMIC_READ, GL_INFO_LOG_LENGTH, GL_MAP_READ_BIT, GL_READ_ONLY, GL_SHADER_STORAGE_BARRIER_BIT, GL_SHADER_STORAGE_BUFFER, GL_STREAM_COPY, glAttachShader, glBindBuffer, glBindBufferBase, glBufferData, GLchar, glCompileShader, glCreateProgram, glCreateShader, glDeleteShader, glDispatchCompute, glGenBuffers, glGetError, glGetShaderInfoLog, glGetShaderiv, GLint, glLinkProgram, glMapBufferRange, glMemoryBarrier, glShaderSource, GLsizei, GLuint, glUnmapBuffer, glUseProgram};
+use gles31_sys::{GL_COMPILE_STATUS, GL_COMPUTE_SHADER, GL_DYNAMIC_READ, GL_INFO_LOG_LENGTH, GL_MAP_READ_BIT, GL_READ_ONLY, GL_SHADER_STORAGE_BARRIER_BIT, GL_SHADER_STORAGE_BUFFER, GL_STREAM_COPY, glAttachShader, glBindBuffer, glBindBufferBase, glBufferData, GLchar, glCompileShader, glCreateProgram, glCreateShader, glDeleteShader, glDispatchCompute, glGenBuffers, glGetError, glGetShaderInfoLog, glGetShaderiv, GLint, glLinkProgram, glMapBufferRange, glMemoryBarrier, glShaderSource, GLsizei, GLuint, glUnmapBuffer, glUseProgram, glLineWidth};
 use jni::JNIEnv;
 use jni::objects::{JObject, JString};
-use khronos_egl::{choose_config, choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, create_pixmap_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, GL_COLORSPACE, GL_COLORSPACE_SRGB, initialize, make_current, NO_CONTEXT, query_surface, swap_buffers, EGLContext};
+use khronos_egl::{choose_config, choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, create_pixmap_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, GL_COLORSPACE, GL_COLORSPACE_SRGB, initialize, make_current, NO_CONTEXT, query_surface, swap_buffers, EGLContext, destroy_context, Display};
 use log::error;
 use log::info;
 use log::Level;
@@ -53,50 +53,83 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
     file.write_all(&out).unwrap();
 }
 
-struct GlColorConverter {
-    width: usize, height: usize,
-    ctx: khronos_egl::Context,
-
+struct Nv12SizeInfo {
+    width: usize,
+    height: usize,
 }
 
-impl GlColorConverter  {
+impl Nv12SizeInfo {
+    fn y_in_px_per_word(&self) -> usize { 2 }
+    fn y_out_px_per_word(&self) -> usize { 4 }
+    fn y_out_px_cnt(&self) -> usize { (self.width * self.height) as usize }
+    fn y_out_word_cnt(&self) -> usize { self.y_out_px_cnt() / size_of::<u32>() }
+    fn y_out_byte_cnt(&self) -> usize { self.y_out_word_cnt() * size_of::<u32>() }
+    fn y_in_word_stride(&self) -> usize { self.width / self.y_in_px_per_word() }
+    fn y_out_word_stride(&self) -> usize { self.width / self.y_out_px_per_word() }
+
+    // uv plane is 1/2 size of input
+    fn uv_scale(&self) -> usize { 2 }
+    fn uv_bytes_per_px(&self) -> usize { 2 }
+    fn uv_px_per_word(&self) -> usize { size_of::<GLuint>() / self.uv_bytes_per_px() }
+    fn uv_out_width(&self) -> usize { self.width / self.uv_scale() }
+    fn uv_out_height(&self) -> usize { self.height / self.uv_scale() }
+    fn uv_out_px_cnt(&self) -> usize { (self.uv_out_width() * self.uv_out_height()) as usize }
+    fn uv_out_byte_cnt(&self) -> usize { self.uv_out_px_cnt() * self.uv_bytes_per_px() }
+    fn uv_in_word_stride(&self) -> usize { self.width / self.uv_px_per_word() }
+    fn uv_out_word_stride(&self) -> usize { self.uv_out_width() / self.uv_px_per_word() }
+
+    fn total_byte_cnt(&self) -> usize { self.y_out_byte_cnt() + self.uv_out_byte_cnt() }
+}
+
+struct GlColorConverter {
+    width: usize,
+    height: usize,
+    ctx: Option<khronos_egl::Context>,
+    display: Option<Display>,
+    yuy2_to_y8_program: u32,
+    yuy2_to_uv_program: u32,
+}
+
+impl GlColorConverter {
     pub fn new(width: usize, height: usize) -> Result<GlColorConverter, Error> {
-        let ctx = gl_init().context("Couldn't init OpenGL!")?;
+        let (display, ctx) = gl_init().context("Couldn't init OpenGL!")?;
 
         Ok(GlColorConverter {
             width,
             height,
-            ctx,
+            ctx: Some(ctx),
+            display: Some(display),
+            yuy2_to_y8_program: create_yuy2_to_y8(width, height)?,
+            yuy2_to_uv_program: create_yuy2_to_uv(width, height)?,
         })
     }
 
     pub fn convert_frame(&self, src_frame: Vec<u8>) -> Result<Vec<u8>, Error> {
-        let (y_out_byte_cnt, y_out_word_stride, yuy2_to_y8) = create_yuy2_to_y8(self.width, self.height)?;
-        let (uv_out_byte_cnt, uv_out_word_stride, yuy2_to_uv) = create_yuy2_to_uv(self.width, self.height)?;
-        let mut output_frame = Vec::with_capacity(y_out_byte_cnt + uv_out_byte_cnt);
-        let (y_slice, uv_slice) = output_frame.split_at_mut(y_out_byte_cnt);
+        let size_info = Nv12SizeInfo { width: self.width, height: self.height };
+
+        let mut output_frame = Vec::with_capacity(size_info.total_byte_cnt());
 
         // Extract Y plane
         let _input_buffer = create_input_buffer(&src_frame, 0)?;
-        let _output_buffer = create_output_buffer(y_out_byte_cnt, 1)?;
-        self.run_program(yuy2_to_y8, y_out_word_stride, y_slice);
+        let _output_buffer = create_output_buffer(size_info.y_out_byte_cnt(), 1)?;
+        self.run_program(self.yuy2_to_y8_program, size_info.y_out_word_stride(), &mut output_frame, size_info.y_out_byte_cnt());
 
         // Extract UV plane
         let _input_buffer = create_input_buffer(&src_frame, 0)?;
-        let _output_buffer = create_output_buffer(uv_out_byte_cnt, 1)?;
-        self.run_program(yuy2_to_uv, uv_out_word_stride, uv_slice);
+        let _output_buffer = create_output_buffer(size_info.uv_out_byte_cnt(), 1)?;
+        self.run_program(self.yuy2_to_uv_program, size_info.uv_out_word_stride(), &mut output_frame, size_info.uv_out_byte_cnt());
 
         Ok(output_frame)
     }
 
-    fn run_program(&self, program: u32, x_sz: usize, mut out_slice: & mut [u8]) {
+    fn run_program(&self, program: u32, x_sz: usize, out: &mut Vec<u8>, out_size: usize) {
         unsafe {
             glUseProgram(program);
             glDispatchCompute(self.height as u32, x_sz as u32, 1);
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-            let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_slice.len() as i64, GL_MAP_READ_BIT) as *const u8;
-            let slice = slice::from_raw_parts(ptr, out_slice.len());
-            out_slice.write_all(slice);
+            let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_size as i64, GL_MAP_READ_BIT) as *const u8;
+            let slice = slice::from_raw_parts(ptr, out_size);
+            out.extend_from_slice(slice);
             glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
         }
     }
@@ -104,11 +137,15 @@ impl GlColorConverter  {
 
 impl Drop for GlColorConverter {
     fn drop(&mut self) {
-        unimplemented!()
+        // TODO: teardown opengl stuff
+        if let Some(ctx) = self.ctx {
+            let display = self.display.expect("Display should always exist if ctx does");
+            destroy_context(display, ctx);
+        }
     }
 }
 
-fn gl_init() -> Result<khronos_egl::Context, Error> {
+fn gl_init() -> Result<(Display, khronos_egl::Context), Error> {
     let display = get_display(DEFAULT_DISPLAY).context("Need a display!")?;
     let res = initialize(display).context("Can't initialize")?;
     info!("EGL version={:?}", res);
@@ -123,7 +160,7 @@ fn gl_init() -> Result<khronos_egl::Context, Error> {
     ];
     let ctx = create_context(display, config, None, &attributes).context("Need a context!")?;
     make_current(display, None, None, Some(ctx.clone())).expect("Can't make current");
-    Ok(ctx)
+    Ok((display, ctx))
 }
 
 fn create_input_buffer(mut data: &Vec<u8>, bind_idx: usize) -> Result<u32, Error> {
@@ -154,15 +191,8 @@ fn create_output_buffer(length: usize, bind_idx: usize) -> Result<u32, Error> {
     Ok(buf)
 }
 
-fn create_yuy2_to_y8(width: usize, height: usize) -> Result<(usize, usize, u32), Error> {
-    let in_px_per_word = 2;
-    let out_px_per_word = 4;
-
-    let out_px_cnt = (width * height) as usize; // Y plane only for now
-    let out_word_cnt = out_px_cnt / size_of::<u32>();
-    let out_byte_cnt = out_word_cnt * size_of::<u32>();
-    let in_word_stride = width / in_px_per_word;
-    let out_word_stride = width / out_px_per_word;
+fn create_yuy2_to_y8(width: usize, height: usize) -> Result<u32, Error> {
+    let size_info = Nv12SizeInfo { width, height };
 
     // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
     let COMPUTE_SHADER = format!("#version 310 es\n\
@@ -188,10 +218,10 @@ void main() {{\n\
 \n\
     output_data.elements[y][gl_GlobalInvocationID.y] = out_word;\n\
 }}",
-                                 height = height,
-                                 in_word_stride = in_word_stride,
-                                 out_word_stride = out_word_stride,
-                                 out_px_per_word = out_px_per_word,
+                                 height = size_info.height,
+                                 in_word_stride = size_info.y_in_word_stride(),
+                                 out_word_stride = size_info.y_out_word_stride(),
+                                 out_px_per_word = size_info.y_out_px_per_word(),
     );
     info!("y_shader={}", COMPUTE_SHADER);
     unsafe {
@@ -199,21 +229,13 @@ void main() {{\n\
         let program = glCreateProgram();
         glAttachShader(program, shader);
         glLinkProgram(program);
-        Ok((out_byte_cnt, out_word_stride, program))
+        glDeleteShader(shader);
+        Ok(program)
     }
 }
 
-fn create_yuy2_to_uv(in_width: usize, in_height: usize) -> Result<(usize, usize, u32), Error> {
-    let scale = 2; // uv plane is 1/2 size of input
-    let bytes_per_px = 2; // u & v
-    let px_per_word = size_of::<GLuint>() / bytes_per_px;
-
-    let out_width = in_width / scale;
-    let out_height = in_height / scale;
-    let out_px_cnt = (out_width * out_height) as usize;
-    let out_byte_cnt = out_px_cnt * bytes_per_px;
-    let in_word_stride = in_width / px_per_word;
-    let out_word_stride = out_width / px_per_word;
+fn create_yuy2_to_uv(width: usize, height: usize) -> Result<u32, Error> {
+    let size_info = Nv12SizeInfo { width, height };
 
     // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
     let COMPUTE_SHADER = format!("#version 310 es\n\
@@ -240,11 +262,11 @@ void main() {{\n\
 \n\
     output_data.elements[out_y][gl_GlobalInvocationID.y] = out_word;\n\
 }}",
-                                 in_height = in_height,
-                                 out_height = out_height,
-                                 in_word_stride = in_word_stride,
-                                 out_word_stride = out_word_stride,
-                                 px_per_word = px_per_word,
+                                 in_height = size_info.height,
+                                 out_height = size_info.uv_out_height(),
+                                 in_word_stride = size_info.uv_in_word_stride(),
+                                 out_word_stride = size_info.uv_out_word_stride(),
+                                 px_per_word = size_info.uv_px_per_word(),
     );
     info!("uv_shader={}", COMPUTE_SHADER);
     unsafe {
@@ -252,7 +274,7 @@ void main() {{\n\
         let program = glCreateProgram();
         glAttachShader(program, shader);
         glLinkProgram(program);
-        Ok((out_byte_cnt, out_word_stride, program))
+        Ok(program)
     }
 }
 
