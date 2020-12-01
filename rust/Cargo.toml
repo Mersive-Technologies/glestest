@@ -13,6 +13,7 @@ android_logger = "0.9.0"
 jni = { version = "0.10.2", default-features = false }
 log = { version = "0.4", features = ["max_level_debug", "release_max_level_info"] }
 gles31-sys = "0.1.1"
+streaming-stats = "0.2.3"
 
 [lib]
 name = "glestest"
