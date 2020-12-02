@@ -54,12 +54,12 @@ cargo {
     extraCargoBuildArguments = []
     exec { spec, toolchain ->
         // https://stackoverflow.com/questions/22228180/why-does-my-cross-compiling-fail
-        
+
     def eglPcStr =
 """Name: android-egl
 Description: NDK EGL lib
 Version: 1.5
-Libs: -L${android.ndkDirectory.path}/platforms/android-26/arch-arm64/usr/lib -legl
+Libs: -L${android.ndkDirectory.path}/platforms/android-26/arch-arm64/usr/lib -lEGL
 Cflags:-I${android.ndkDirectory.path}/sysroot/usr/include/EGL/"""
 
         File file = new File("egl.pc")
