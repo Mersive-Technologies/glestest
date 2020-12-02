@@ -36,7 +36,7 @@ android {
 }
 
 cargo {
-    def release = false
+    def release = true
     for(task in gradle.startParameter.taskNames) {
         if(task.contains("Release")) {
             release = true
