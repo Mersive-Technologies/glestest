@@ -120,7 +120,8 @@ struct GlColorConverter {
     y_output_buffer: GLuint,
     pub uv_input_buffer: GLuint,
     uv_output_buffer: GLuint,
-    local_size: usize,
+    local_size_x: usize,
+    local_size_y: usize,
 }
 
 impl GlColorConverter {
@@ -129,18 +130,21 @@ impl GlColorConverter {
 
         let size_info = Nv12SizeInfo{width, height};
 
+        let local_size_x = GlColorConverter::greatest_pow2_divisor(width);
+        let local_size_y = GlColorConverter::greatest_pow2_divisor(height);
         let ret = GlColorConverter {
             width,
             height,
             ctx: Some(ctx),
             display: Some(display),
-            yuy2_to_y8_program: create_yuy2_to_y8(width, height, 130)?,
+            yuy2_to_y8_program: create_yuy2_to_y8(width, height, local_size_x, local_size_y)?,
             y_input_buffer: create_input_buffer(0)?,
             y_output_buffer: create_output_buffer(1, size_info.y_out_byte_cnt())?,
-            yuy2_to_uv_program: create_yuy2_to_uv(width, height, 130)?,
+            yuy2_to_uv_program: create_yuy2_to_uv(width, height, local_size_x, local_size_y)?,
             uv_input_buffer: create_input_buffer(0)?,
             uv_output_buffer: create_output_buffer(1, size_info.uv_out_byte_cnt())?,
-            local_size: 130,
+            local_size_x,
+            local_size_y,
         };
 
         upload_input_buffer(ret.y_input_buffer, &src_frame);
@@ -148,6 +152,8 @@ impl GlColorConverter {
 
         Ok(ret)
     }
+
+    fn greatest_pow2_divisor(num: usize) -> usize { (num & (!(num-1))) }
 
     pub fn convert_frame(&self, src_frame: &Vec<u8>) -> Result<Vec<u8>, Error> {
         let size_info = Nv12SizeInfo { width: self.width, height: self.height };
@@ -172,7 +178,7 @@ impl GlColorConverter {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, output_buffer);
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, output_bind_idx, output_buffer);
             glUseProgram(program);
-            glDispatchCompute((self.height / self.local_size) as u32, (x_sz / self.local_size) as u32, 1);
+            glDispatchCompute((self.height / self.local_size_y) as u32, (x_sz / self.local_size_x) as u32, 1);
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
             let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_size as i64, GL_MAP_READ_BIT) as *const u8;
             let slice = slice::from_raw_parts(ptr, out_size);
@@ -241,7 +247,7 @@ fn create_output_buffer(bind_idx: GLuint, size: usize) -> Result<u32, Error> {
     Ok(buf)
 }
 
-fn create_yuy2_to_y8(width: usize, height: usize, local_size: usize) -> Result<u32, Error> {
+fn create_yuy2_to_y8(width: usize, height: usize, local_size_x: usize, local_size_y: usize) -> Result<u32, Error> {
     let size_info = Nv12SizeInfo { width, height };
 
     // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
@@ -272,8 +278,8 @@ void main() {{\n\
                                  in_word_stride = size_info.y_in_word_stride(),
                                  out_word_stride = size_info.y_out_word_stride(),
                                  out_px_per_word = size_info.y_out_px_per_word(),
-                                 local_size_x = local_size,
-                                 local_size_y = local_size,
+                                 local_size_x = local_size_x,
+                                 local_size_y = local_size_y,
     );
     info!("y_shader={}", COMPUTE_SHADER);
     unsafe {
@@ -286,7 +292,7 @@ void main() {{\n\
     }
 }
 
-fn create_yuy2_to_uv(width: usize, height: usize, local_size: usize) -> Result<u32, Error> {
+fn create_yuy2_to_uv(width: usize, height: usize, local_size_x: usize, local_size_y: usize) -> Result<u32, Error> {
     let size_info = Nv12SizeInfo { width, height };
 
     // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
@@ -319,8 +325,8 @@ void main() {{\n\
                                  in_word_stride = size_info.uv_in_word_stride(),
                                  out_word_stride = size_info.uv_out_word_stride(),
                                  px_per_word = size_info.uv_px_per_word(),
-                                 local_size_x = local_size,
-                                 local_size_y = local_size,
+                                 local_size_x = local_size_x,
+                                 local_size_y = local_size_y,
     );
     info!("uv_shader={}", COMPUTE_SHADER);
     unsafe {
