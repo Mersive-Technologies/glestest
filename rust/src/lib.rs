@@ -82,11 +82,11 @@ fn profile_color_conversion(test_file: &TestFile, num_runs: usize) -> Result<Pro
 
     let stats = ProfStats {
         test_file: test_file.clone(),
-        mean_time_ms: mean,
-        median_time_ms: median,
-        std_dev_ms: dev,
-        min_time_ms: min,
-        max_time_ms: max,
+        mean_time_us: mean,
+        median_time_us: median,
+        std_dev_us: dev,
+        min_time_us: min,
+        max_time_us: max,
     };
 
     // Save
@@ -391,11 +391,11 @@ pub unsafe fn load_shader(shader_src: &str) -> Result<GLuint, Error> {
 #[derive(Debug,Clone)]
 struct ProfStats {
     test_file: TestFile,
-    mean_time_ms: f64,
-    median_time_ms: f64,
-    std_dev_ms: f64,
-    min_time_ms: f64,
-    max_time_ms: f64,
+    mean_time_us: f64,
+    median_time_us: f64,
+    std_dev_us: f64,
+    min_time_us: f64,
+    max_time_us: f64,
 }
 
 #[derive(Debug,Clone)]
