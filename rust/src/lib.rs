@@ -16,7 +16,7 @@ use std::ptr::{null, null_mut};
 use std::slice;
 
 use anyhow::{anyhow, Context, Error};
-use gles31_sys::{GL_COMPILE_STATUS, GL_COMPUTE_SHADER, GL_DYNAMIC_READ, GL_INFO_LOG_LENGTH, GL_MAP_READ_BIT, GL_READ_ONLY, GL_SHADER_STORAGE_BARRIER_BIT, GL_SHADER_STORAGE_BUFFER, GL_STREAM_COPY, glAttachShader, glBindBuffer, glBindBufferBase, glBufferData, GLchar, glCompileShader, glCreateProgram, glCreateShader, glDeleteShader, glDispatchCompute, glGenBuffers, glGetError, glGetShaderInfoLog, glGetShaderiv, GLint, glLinkProgram, glMapBufferRange, glMemoryBarrier, glShaderSource, GLsizei, GLuint, glUnmapBuffer, glUseProgram, glLineWidth, GL_DYNAMIC_DRAW, glFinish};
+use gles31_sys::{GL_COMPILE_STATUS, GL_COMPUTE_SHADER, GL_DYNAMIC_READ, GL_INFO_LOG_LENGTH, GL_MAP_READ_BIT, GL_READ_ONLY, GL_SHADER_STORAGE_BARRIER_BIT, GL_SHADER_STORAGE_BUFFER, GL_STREAM_COPY, glAttachShader, glBindBuffer, glBindBufferBase, glBufferData, GLchar, glCompileShader, glCreateProgram, glCreateShader, glDeleteShader, glDispatchCompute, glGenBuffers, glGetError, glGetShaderInfoLog, glGetShaderiv, GLint, glLinkProgram, glMapBufferRange, glMemoryBarrier, glShaderSource, GLsizei, GLuint, glUnmapBuffer, glUseProgram, glLineWidth, GL_DYNAMIC_DRAW, glFinish, GL_DYNAMIC_COPY, GL_MAP_WRITE_BIT, GL_MAP_UNSYNCHRONIZED_BIT, GL_STREAM_DRAW, GL_MAP_INVALIDATE_BUFFER_BIT, GL_STREAM_READ};
 use jni::JNIEnv;
 use jni::objects::{JObject, JString};
 use khronos_egl::{choose_config, choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, create_pixmap_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, GL_COLORSPACE, GL_COLORSPACE_SRGB, initialize, make_current, NO_CONTEXT, query_surface, swap_buffers, EGLContext, destroy_context, Display};
@@ -38,11 +38,19 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
 
     let path: String = env.get_string(path).unwrap().into();
 
+    // How many color conversion to do per test file.
     let num_runs = 100;
+
+    // This number is pretty arbitrary and is based on the adreno chip. It doesn't need to
+    // be a power of 2 or anything, we just need to make sure we correctly divy data into
+    // these work groups.
+    // I think we can just optimize it for 1080p as long as lower resolutions can still go 60fps.
+    let local_size = 32;
+
     let mut stats = vec![];
     let test_files: Vec<TestFile> = TestFile::get_test_files(&path).unwrap();
     for test_file in test_files {
-        let stat = profile_color_conversion(&test_file, num_runs).unwrap();
+        let stat = profile_color_conversion(&test_file, num_runs, local_size).unwrap();
         stats.push(stat);
     }
 
@@ -51,7 +59,7 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
     }
 }
 
-fn profile_color_conversion(test_file: &TestFile, num_runs: usize) -> Result<ProfStats, anyhow::Error> {
+fn profile_color_conversion(test_file: &TestFile, num_runs: usize, local_size: usize) -> Result<ProfStats, anyhow::Error> {
     let mut file = File::open(&test_file.path()).context("no file found")?;
     let metadata = std::fs::metadata(&test_file.path()).context("unable to read metadata")?;
 
@@ -60,7 +68,7 @@ fn profile_color_conversion(test_file: &TestFile, num_runs: usize) -> Result<Pro
     file.read(&mut data).context("buffer overflow")?;
     info!("Read {} byte image", data.len());
 
-    let converter = GlColorConverter::new(test_file.width, test_file.height, &data)
+    let converter = GlColorConverter::new(test_file.width, test_file.height, local_size, &data)
         .context("Failed to create color converter")?;
 
     let mut d = Vec::with_capacity(num_runs);
@@ -140,31 +148,36 @@ struct GlColorConverter {
     uv_output_buffer: GLuint,
     local_size_x: usize,
     local_size_y: usize,
+    input_buffer_idx: GLuint,
+    output_buffer_idx: GLuint,
 }
 
 impl GlColorConverter {
-    pub fn new(width: usize, height: usize, src_frame: &Vec<u8>) -> Result<GlColorConverter, Error> {
+    pub fn new(width: usize, height: usize, local_size: usize, src_frame: &Vec<u8>) -> Result<GlColorConverter, Error> {
         let (display, ctx) = gl_init().context("Couldn't init OpenGL!")?;
 
         let size_info = Nv12SizeInfo{width, height};
+        let size = width * height * 2;
 
-        let local_size_x = GlColorConverter::greatest_pow2_divisor(width);
-        let local_size_y = GlColorConverter::greatest_pow2_divisor(height);
-        let local_size = std::cmp::min(local_size_x, local_size_y);
+        let input_buffer_idx = 0 as GLuint;
+        let output_buffer_idx = 1 as GLuint;
+
         info!("Compute groups: {}", local_size);
         let ret = GlColorConverter {
             width,
             height,
             ctx: Some(ctx),
             display: Some(display),
-            yuy2_to_y8_program: create_yuy2_to_y8(width, height, local_size, local_size)?,
-            y_input_buffer: create_input_buffer(0)?,
-            y_output_buffer: create_output_buffer(1, size_info.y_out_byte_cnt())?,
-            yuy2_to_uv_program: create_yuy2_to_uv(width, height, local_size, local_size)?,
-            uv_input_buffer: create_input_buffer(0)?,
-            uv_output_buffer: create_output_buffer(1, size_info.uv_out_byte_cnt())?,
+            yuy2_to_y8_program: create_yuy2_to_y8(width, height, local_size, local_size, input_buffer_idx, output_buffer_idx)?,
+            y_input_buffer: create_input_buffer(input_buffer_idx, size)?,
+            y_output_buffer: create_output_buffer(output_buffer_idx, size_info.y_out_byte_cnt())?,
+            yuy2_to_uv_program: create_yuy2_to_uv(width, height, local_size, local_size, input_buffer_idx, output_buffer_idx)?,
+            uv_input_buffer: create_input_buffer(input_buffer_idx, size)?,
+            uv_output_buffer: create_output_buffer(output_buffer_idx, size_info.uv_out_byte_cnt())?,
             local_size_x: local_size,
             local_size_y: local_size,
+            input_buffer_idx,
+            output_buffer_idx,
         };
 
         upload_input_buffer(ret.y_input_buffer, &src_frame);
@@ -173,8 +186,6 @@ impl GlColorConverter {
         Ok(ret)
     }
 
-    fn greatest_pow2_divisor(num: usize) -> usize { num & !(num-1) }
-
     pub fn convert_frame(&self, src_frame: &Vec<u8>) -> Result<Vec<u8>, Error> {
         let size_info = Nv12SizeInfo { width: self.width, height: self.height };
 
@@ -182,23 +193,23 @@ impl GlColorConverter {
 
         // Extract Y plane
         // upload_input_buffer(self.y_input_buffer, &src_frame);
-        self.run_program(self.yuy2_to_y8_program, self.y_input_buffer, 0, self.y_output_buffer, 1, size_info.y_out_word_stride(), &mut output_frame, size_info.y_out_byte_cnt());
+        self.run_program(self.yuy2_to_y8_program, self.y_input_buffer, self.input_buffer_idx, self.y_output_buffer, self.output_buffer_idx, size_info.y_out_word_stride(), &mut output_frame, size_info.y_out_byte_cnt());
 
         // Extract UV plane
         // upload_input_buffer(self.uv_input_buffer, &src_frame);
-        self.run_program(self.yuy2_to_uv_program, self.uv_input_buffer, 0, self.uv_output_buffer, 1, size_info.uv_out_word_stride(), &mut output_frame, size_info.uv_out_byte_cnt());
+        self.run_program(self.yuy2_to_uv_program, self.uv_input_buffer, self.input_buffer_idx, self.uv_output_buffer, self.output_buffer_idx, size_info.uv_out_word_stride(), &mut output_frame, size_info.uv_out_byte_cnt());
 
         Ok(output_frame)
     }
 
     fn run_program(&self, program: u32, input_buffer: GLuint, input_bind_idx: GLuint, output_buffer: GLuint, output_bind_idx: GLuint, x_sz: usize, out: &mut Vec<u8>, out_size: usize) {
-        let x_groups = (self.height / self.local_size_y) as u32;
-        let y_groups = (x_sz / self.local_size_y) as u32;
+        let x_groups = self.height as f64 / self.local_size_y as f64;
+        let x_groups = x_groups.ceil() as u32;
+        let y_groups = x_sz as f64 / self.local_size_x as f64;
+        let y_groups = y_groups.ceil() as u32;
         let z_groups = 1;
         unsafe {
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, input_buffer); // TODO 1
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, input_bind_idx, input_buffer);
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, output_buffer);
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, output_bind_idx, output_buffer);
             glUseProgram(program);
             glDispatchCompute(x_groups, y_groups, z_groups);
@@ -207,6 +218,8 @@ impl GlColorConverter {
             let slice = slice::from_raw_parts(ptr, out_size);
             out.extend_from_slice(slice);
             glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+            glUseProgram(0);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         }
     }
 }
@@ -239,10 +252,14 @@ fn gl_init() -> Result<(Display, khronos_egl::Context), Error> {
     Ok((display, ctx))
 }
 
-fn create_input_buffer(bind_idx: GLuint) -> Result<u32, Error> {
+fn create_input_buffer(bind_idx: GLuint, size: usize) -> Result<u32, Error> {
     let mut buf: GLuint = 0;
     unsafe {
         glGenBuffers(1, &mut buf);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, size as i64, null() as *const c_void, GL_STREAM_DRAW);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind_idx, buf);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
     if buf == 0 {
         return Err(anyhow!("Couldn't create input buffer!"));
@@ -253,7 +270,10 @@ fn create_input_buffer(bind_idx: GLuint) -> Result<u32, Error> {
 fn upload_input_buffer(buffer_id: GLuint, data: &Vec<u8>) -> () {
     unsafe {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer_id);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, data.len() as i64, data.as_ptr() as *const c_void, GL_STREAM_COPY); // TODO GL_DYNAMIC_DRAW
+        let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, data.len() as i64, GL_MAP_WRITE_BIT|GL_MAP_INVALIDATE_BUFFER_BIT) as *mut u8;
+        std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
 }
 
@@ -262,7 +282,9 @@ fn create_output_buffer(bind_idx: GLuint, size: usize) -> Result<u32, Error> {
     unsafe {
         glGenBuffers(1, &mut buf);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, size as i64, null() as *const c_void, GL_DYNAMIC_READ);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, size as i64, null() as *const c_void, GL_STREAM_READ);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind_idx, buf);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
     if buf == 0 {
         return Err(anyhow!("Couldn't create output buffer!"));
@@ -270,17 +292,17 @@ fn create_output_buffer(bind_idx: GLuint, size: usize) -> Result<u32, Error> {
     Ok(buf)
 }
 
-fn create_yuy2_to_y8(width: usize, height: usize, local_size_x: usize, local_size_y: usize) -> Result<u32, Error> {
+fn create_yuy2_to_y8(width: usize, height: usize, local_size_x: usize, local_size_y: usize, input_buffer_idx: GLuint, output_buffer_idx: GLuint) -> Result<u32, Error> {
     let size_info = Nv12SizeInfo { width, height };
 
     // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
     let COMPUTE_SHADER = format!("#version 310 es\n\
 layout(local_size_x = {local_size_x}, local_size_y = {local_size_y}) in;\n\
 layout(std430) buffer;\n\
-layout(binding = 0) readonly buffer Input0 {{\n\
+layout(binding = {input_buffer_idx}) readonly buffer Input0 {{\n\
     uint elements[{height}][{in_word_stride}];\n\
 }} input_data0;\n\
-layout(binding = 1) writeonly buffer Output {{\n\
+layout(binding = {output_buffer_idx}) writeonly buffer Output {{\n\
     uint elements[{height}][{out_word_stride}];\n\
 }} output_data;\n\
 void main() {{\n\
@@ -303,6 +325,8 @@ void main() {{\n\
                                  out_px_per_word = size_info.y_out_px_per_word(),
                                  local_size_x = local_size_x,
                                  local_size_y = local_size_y,
+                                 input_buffer_idx = input_buffer_idx,
+                                 output_buffer_idx = output_buffer_idx,
     );
     debug!("y_shader={}", COMPUTE_SHADER);
     unsafe {
@@ -315,17 +339,17 @@ void main() {{\n\
     }
 }
 
-fn create_yuy2_to_uv(width: usize, height: usize, local_size_x: usize, local_size_y: usize) -> Result<u32, Error> {
+fn create_yuy2_to_uv(width: usize, height: usize, local_size_x: usize, local_size_y: usize, input_buffer_idx: GLuint, output_buffer_idx: GLuint) -> Result<u32, Error> {
     let size_info = Nv12SizeInfo { width, height };
 
     // https://stackoverflow.com/questions/51245319/minimal-working-example-of-compute-shader-for-open-gl-es-3-1
     let COMPUTE_SHADER = format!("#version 310 es\n\
 layout(local_size_x = {local_size_x}, local_size_y = {local_size_y}) in;\n\
 layout(std430) buffer;\n\
-layout(binding = 0) readonly buffer Input0 {{\n\
+layout(binding = {input_buffer_idx}) readonly buffer Input0 {{\n\
     uint elements[{in_height}][{in_word_stride}];\n\
 }} input_data0;\n\
-layout(binding = 1) writeonly buffer Output {{\n\
+layout(binding = {output_buffer_idx}) writeonly buffer Output {{\n\
     uint elements[{out_height}][{out_word_stride}];\n\
 }} output_data;\n\
 void main() {{\n\
@@ -350,6 +374,8 @@ void main() {{\n\
                                  px_per_word = size_info.uv_px_per_word(),
                                  local_size_x = local_size_x,
                                  local_size_y = local_size_y,
+                                 input_buffer_idx = input_buffer_idx,
+                                 output_buffer_idx = output_buffer_idx,
     );
     debug!("uv_shader={}", COMPUTE_SHADER);
     unsafe {
@@ -357,6 +383,7 @@ void main() {{\n\
         let program = glCreateProgram();
         glAttachShader(program, shader);
         glLinkProgram(program);
+        glDeleteShader(shader);
         Ok(program)
     }
 }
@@ -377,7 +404,7 @@ pub unsafe fn load_shader(shader_src: &str) -> Result<GLuint, Error> {
         let mut info_len: GLint = 0;
         glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &mut info_len);
         if info_len > 1 {
-            let mut info_log = vec![0u8; info_len as usize];
+            let info_log = vec![0u8; info_len as usize];
             glGetShaderInfoLog(shader, info_len, null_mut() as *mut GLsizei, info_log.as_ptr() as *mut u8);
             let str = CString::new(info_log)?;
             return Err(anyhow!("Error compiling shader: {}", str.to_str()?));
