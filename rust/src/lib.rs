@@ -452,7 +452,7 @@ impl TestFile {
 
     // Expects format such as: 1920x1080.raw
     fn get_res_from_file_path(file_path: &String) -> Result<(usize, usize), anyhow::Error> {
-        let re = Regex::new(r"\d{2,}x\d{2,}").unwrap();
+        let re = Regex::new(r"^\d{2,}x\d{2,}").unwrap();
         let mat = re.find(file_path).ok_or(anyhow!("Failed to parse resolution from: {}", file_path))?;
         let res_strs: Vec<&str> = mat.as_str().split('x').collect();
         match res_strs.len() {
