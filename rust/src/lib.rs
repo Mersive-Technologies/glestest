@@ -51,14 +51,15 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
 
     let mut lowest_1080p_stat: Option<(usize, ProfStats)> = None;
 
-    let min_groups = 2;
-    let max_groups = 128;
+    let min_groups = 32;
+    let max_groups = 32;
+    let save_output_file = true;
 
     for local_size in min_groups..=max_groups {
         let mut stats = vec![];
         let test_files: Vec<TestFile> = TestFile::get_test_files(&path).unwrap();
         for test_file in test_files {
-            let stat = profile_color_conversion(&test_file, num_runs, local_size).unwrap();
+            let stat = profile_color_conversion(&test_file, num_runs, local_size, save_output_file).unwrap();
             if test_file.height == 1080 {
                 info!("1080p conversion with {} work groups: {} us", local_size, stat.mean_time_us);
                 if lowest_1080p_stat.as_ref().is_none() || lowest_1080p_stat.as_ref().unwrap().1.mean_time_us > stat.mean_time_us {
@@ -78,7 +79,7 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
     info!("Lowest 1080p work group num {}: {:#?}", lowest_1080p_stat.as_ref().unwrap().0, lowest_1080p_stat.as_ref().unwrap());
 }
 
-fn profile_color_conversion(test_file: &TestFile, num_runs: usize, local_size: usize) -> Result<ProfStats, anyhow::Error> {
+fn profile_color_conversion(test_file: &TestFile, num_runs: usize, local_size: usize, save_output: bool) -> Result<ProfStats, anyhow::Error> {
     let mut file = File::open(&test_file.path()).context("no file found")?;
     let metadata = std::fs::metadata(&test_file.path()).context("unable to read metadata")?;
 
@@ -87,16 +88,13 @@ fn profile_color_conversion(test_file: &TestFile, num_runs: usize, local_size: u
     file.read(&mut data).context("buffer overflow")?;
     info!("Read {} byte image", data.len());
 
-    let converter = GlColorConverter::new(test_file.width, test_file.height, local_size, &data)
+    let converter = GlColorConverter::new(test_file.width, test_file.height, local_size)
         .context("Failed to create color converter")?;
 
     let mut d = Vec::with_capacity(num_runs);
     for _i in 0..num_runs {
         let start = Instant::now();
-        let out = converter.convert_frame(&data)?;
-        unsafe {
-            glFinish();
-        }
+        let out = converter.convert_frame(&data).context("Failed to convert frame")?;
         let duration = start.elapsed().as_micros();
         d.push(duration as u64);
     }
@@ -117,11 +115,13 @@ fn profile_color_conversion(test_file: &TestFile, num_runs: usize, local_size: u
     };
 
     // Save
-    let out = converter.convert_frame(&data).context("Failed to convert frame")?;
-    let path = format!("{}/converted_{}x{}.raw", &test_file.dir, test_file.width, test_file.height);
-    info!("Writing file {}...", path);
-    let mut file = File::create(path).context("Failed to create output file")?;
-    file.write_all(&out).context("Failed to write output file")?;
+    if save_output {
+        let out = converter.convert_frame(&data).context("Failed to convert frame")?;
+        let path = format!("{}/converted_{}x{}.raw", &test_file.dir, test_file.width, test_file.height);
+        info!("Writing file {}...", path);
+        let mut file = File::create(path).context("Failed to create output file")?;
+        file.write_all(&out).context("Failed to write output file")?;
+    }
 
     Ok(stats)
 }
@@ -161,9 +161,8 @@ struct GlColorConverter {
     display: Option<Display>,
     yuy2_to_y8_program: GLuint,
     yuy2_to_uv_program: GLuint,
-    pub y_input_buffer: GLuint,
+    input_buffer: GLuint,
     y_output_buffer: GLuint,
-    pub uv_input_buffer: GLuint,
     uv_output_buffer: GLuint,
     local_size_x: usize,
     local_size_y: usize,
@@ -172,7 +171,7 @@ struct GlColorConverter {
 }
 
 impl GlColorConverter {
-    pub fn new(width: usize, height: usize, local_size: usize, src_frame: &Vec<u8>) -> Result<GlColorConverter, Error> {
+    pub fn new(width: usize, height: usize, local_size: usize) -> Result<GlColorConverter, Error> {
         let (display, ctx) = gl_init().context("Couldn't init OpenGL!")?;
 
         let size_info = Nv12SizeInfo{width, height};
@@ -188,19 +187,15 @@ impl GlColorConverter {
             ctx: Some(ctx),
             display: Some(display),
             yuy2_to_y8_program: create_yuy2_to_y8(width, height, local_size, local_size, input_buffer_idx, output_buffer_idx)?,
-            y_input_buffer: create_input_buffer(input_buffer_idx, size)?,
+            input_buffer: create_input_buffer(size)?,
             y_output_buffer: create_output_buffer(output_buffer_idx, size_info.y_out_byte_cnt())?,
             yuy2_to_uv_program: create_yuy2_to_uv(width, height, local_size, local_size, input_buffer_idx, output_buffer_idx)?,
-            uv_input_buffer: create_input_buffer(input_buffer_idx, size)?,
             uv_output_buffer: create_output_buffer(output_buffer_idx, size_info.uv_out_byte_cnt())?,
             local_size_x: local_size,
             local_size_y: local_size,
             input_buffer_idx,
             output_buffer_idx,
         };
-
-        upload_input_buffer(ret.y_input_buffer, &src_frame);
-        upload_input_buffer(ret.uv_input_buffer, &src_frame);
 
         Ok(ret)
     }
@@ -210,13 +205,15 @@ impl GlColorConverter {
 
         let mut output_frame = Vec::with_capacity(size_info.total_byte_cnt());
 
+        upload_input_buffer(self.input_buffer, src_frame);
+
         // Extract Y plane
         // upload_input_buffer(self.y_input_buffer, &src_frame);
-        self.run_program(self.yuy2_to_y8_program, self.y_input_buffer, self.input_buffer_idx, self.y_output_buffer, self.output_buffer_idx, size_info.y_out_word_stride(), &mut output_frame, size_info.y_out_byte_cnt());
+        self.run_program(self.yuy2_to_y8_program, self.input_buffer, self.input_buffer_idx, self.y_output_buffer, self.output_buffer_idx, size_info.y_out_word_stride(), &mut output_frame, size_info.y_out_byte_cnt());
 
         // Extract UV plane
         // upload_input_buffer(self.uv_input_buffer, &src_frame);
-        self.run_program(self.yuy2_to_uv_program, self.uv_input_buffer, self.input_buffer_idx, self.uv_output_buffer, self.output_buffer_idx, size_info.uv_out_word_stride(), &mut output_frame, size_info.uv_out_byte_cnt());
+        self.run_program(self.yuy2_to_uv_program, self.input_buffer, self.input_buffer_idx, self.uv_output_buffer, self.output_buffer_idx, size_info.uv_out_word_stride(), &mut output_frame, size_info.uv_out_byte_cnt());
 
         Ok(output_frame)
     }
@@ -233,6 +230,7 @@ impl GlColorConverter {
             glUseProgram(program);
             glDispatchCompute(x_groups, y_groups, z_groups);
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, output_buffer);
             let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_size as i64, GL_MAP_READ_BIT) as *const u8;
             let slice = slice::from_raw_parts(ptr, out_size);
             out.extend_from_slice(slice);
@@ -271,13 +269,12 @@ fn gl_init() -> Result<(Display, khronos_egl::Context), Error> {
     Ok((display, ctx))
 }
 
-fn create_input_buffer(bind_idx: GLuint, size: usize) -> Result<u32, Error> {
+fn create_input_buffer(size: usize) -> Result<u32, Error> {
     let mut buf: GLuint = 0;
     unsafe {
         glGenBuffers(1, &mut buf);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
         glBufferData(GL_SHADER_STORAGE_BUFFER, size as i64, null() as *const c_void, GL_STREAM_DRAW);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind_idx, buf);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
     if buf == 0 {
