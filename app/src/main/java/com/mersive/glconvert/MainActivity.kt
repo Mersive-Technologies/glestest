@@ -12,9 +12,17 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        val texName = "thanksgiving.raw";
-        val bytes = this.classLoader.getResourceAsStream(texName).readBytes()
-        File(filesDir.absolutePath, texName).writeBytes(bytes)
+        val textures = arrayOf(
+            "1920x1080.raw",
+            "1280x720.raw",
+            "640x480.raw",
+            "640x360.raw"
+        );
+
+        for (texture in textures) {
+            val bytes = this.classLoader.getResourceAsStream(texture).readBytes()
+            File(filesDir.absolutePath, texture).writeBytes(bytes)
+        }
 
         init(filesDir.absolutePath)
     }

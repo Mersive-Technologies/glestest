@@ -5,9 +5,10 @@
 #![allow(non_camel_case_types)]
 
 extern crate android_logger;
+extern crate regex;
 
-use std::ffi::{c_void, CString};
-use std::fs::File;
+use std::ffi::{c_void, CString, OsStr};
+use std::fs::{File, DirEntry};
 use std::io::{Read, Write};
 use std::mem::size_of;
 use std::os::raw::c_char;
@@ -19,12 +20,12 @@ use gles31_sys::{GL_COMPILE_STATUS, GL_COMPUTE_SHADER, GL_DYNAMIC_READ, GL_INFO_
 use jni::JNIEnv;
 use jni::objects::{JObject, JString};
 use khronos_egl::{choose_config, choose_first_config, Config, CONTEXT_CLIENT_VERSION, create_context, create_pbuffer_surface, create_pixmap_surface, DEFAULT_DISPLAY, EGLConfig, get_current_display, get_display, GL_COLORSPACE, GL_COLORSPACE_SRGB, initialize, make_current, NO_CONTEXT, query_surface, swap_buffers, EGLContext, destroy_context, Display};
-use log::error;
-use log::info;
+use log::{info, debug, error};
 use log::Level;
 use std::time::Instant;
 use std::cmp::{min, max};
-use rand::Rng;
+use regex::Regex;
+use std::path::Path;
 
 #[no_mangle]
 pub extern fn Java_com_mersive_glconvert_MainActivity_init(
@@ -37,48 +38,65 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
 
     let path: String = env.get_string(path).unwrap().into();
 
+    let num_runs = 100;
+    let mut stats = vec![];
+    let test_files: Vec<TestFile> = TestFile::get_test_files(&path).unwrap();
+    for test_file in test_files {
+        let stat = profile_color_conversion(&test_file, num_runs).unwrap();
+        stats.push(stat);
+    }
 
-    let filename = format!("{}/thanksgiving.raw", path);
-    let mut file = File::open(&filename).context("no file found").unwrap();
-    let metadata = std::fs::metadata(&filename).context("unable to read metadata").unwrap();
+    for stat in stats {
+        info!("{:#?}", &stat);
+    }
+}
+
+fn profile_color_conversion(test_file: &TestFile, num_runs: usize) -> Result<ProfStats, anyhow::Error> {
+    let mut file = File::open(&test_file.path()).context("no file found")?;
+    let metadata = std::fs::metadata(&test_file.path()).context("unable to read metadata")?;
 
     // load input image
     let mut data = vec![0; metadata.len() as usize];
-    file.read(&mut data).context("buffer overflow").unwrap();
+    file.read(&mut data).context("buffer overflow")?;
     info!("Read {} byte image", data.len());
 
+    let converter = GlColorConverter::new(test_file.width, test_file.height, &data)
+        .context("Failed to create color converter")?;
 
-    let converter = GlColorConverter::new(1300, 1300, &data).unwrap();
-
-    let size = 100;
-    let mut d = Vec::with_capacity(size);
-    for _i in 0..size {
+    let mut d = Vec::with_capacity(num_runs);
+    for _i in 0..num_runs {
         let start = Instant::now();
-        let out = converter.convert_frame(&data).unwrap();
+        let out = converter.convert_frame(&data)?;
         unsafe {
             glFinish();
         }
         let duration = start.elapsed().as_micros();
         d.push(duration as u64);
     }
-    let mean = d.iter().fold(0f64, |acc, &cur| acc + cur as f64) / size as f64;
-    let dev = (d.iter().fold(0f64, |acc, &cur| (cur as f64 - mean).powf(2f64) + acc) / size as f64).sqrt();
+    let mean = d.iter().fold(0f64, |acc, &cur| acc + cur as f64) / num_runs as f64;
+    let dev = (d.iter().fold(0f64, |acc, &cur| (cur as f64 - mean).powf(2f64) + acc) / num_runs as f64).sqrt();
     let sorted = d.sort();
-    let median = d[size / 2];
-    let min = d.iter().fold(u64::max_value(), |acc, &cur| min(acc, cur));
-    let max = d.iter().fold(0u64, |acc, &cur| max(acc, cur));
+    let median = d[num_runs / 2] as f64;
+    let min = d.iter().fold(u64::max_value(), |acc, &cur| min(acc, cur)) as f64;
+    let max = d.iter().fold(0u64, |acc, &cur| max(acc, cur)) as f64;
 
-    info!("mean {} stddev {} median {} min {} max {}", mean, dev, median, min, max);
+    let stats = ProfStats {
+        test_file: test_file.clone(),
+        mean_time_ms: mean,
+        median_time_ms: median,
+        std_dev_ms: dev,
+        min_time_ms: min,
+        max_time_ms: max,
+    };
 
-
-    let mut rng = rand::thread_rng();
-    let r = rng.gen_range(0,1000);
     // Save
-    let out = converter.convert_frame(&data).unwrap();
-    let path = format!("{}/pic{}.raw", path, r);
+    let out = converter.convert_frame(&data).context("Failed to convert frame")?;
+    let path = format!("{}/converted_{}x{}.raw", &test_file.dir, test_file.width, test_file.height);
     info!("Writing file {}...", path);
-    let mut file = File::create(path).unwrap();
-    file.write_all(&out).unwrap();
+    let mut file = File::create(path).context("Failed to create output file")?;
+    file.write_all(&out).context("Failed to write output file")?;
+
+    Ok(stats)
 }
 
 struct Nv12SizeInfo {
@@ -132,19 +150,21 @@ impl GlColorConverter {
 
         let local_size_x = GlColorConverter::greatest_pow2_divisor(width);
         let local_size_y = GlColorConverter::greatest_pow2_divisor(height);
+        let local_size = std::cmp::min(local_size_x, local_size_y);
+        info!("Compute groups: {}", local_size);
         let ret = GlColorConverter {
             width,
             height,
             ctx: Some(ctx),
             display: Some(display),
-            yuy2_to_y8_program: create_yuy2_to_y8(width, height, local_size_x, local_size_y)?,
+            yuy2_to_y8_program: create_yuy2_to_y8(width, height, local_size, local_size)?,
             y_input_buffer: create_input_buffer(0)?,
             y_output_buffer: create_output_buffer(1, size_info.y_out_byte_cnt())?,
-            yuy2_to_uv_program: create_yuy2_to_uv(width, height, local_size_x, local_size_y)?,
+            yuy2_to_uv_program: create_yuy2_to_uv(width, height, local_size, local_size)?,
             uv_input_buffer: create_input_buffer(0)?,
             uv_output_buffer: create_output_buffer(1, size_info.uv_out_byte_cnt())?,
-            local_size_x,
-            local_size_y,
+            local_size_x: local_size,
+            local_size_y: local_size,
         };
 
         upload_input_buffer(ret.y_input_buffer, &src_frame);
@@ -153,7 +173,7 @@ impl GlColorConverter {
         Ok(ret)
     }
 
-    fn greatest_pow2_divisor(num: usize) -> usize { (num & (!(num-1))) }
+    fn greatest_pow2_divisor(num: usize) -> usize { num & !(num-1) }
 
     pub fn convert_frame(&self, src_frame: &Vec<u8>) -> Result<Vec<u8>, Error> {
         let size_info = Nv12SizeInfo { width: self.width, height: self.height };
@@ -172,13 +192,16 @@ impl GlColorConverter {
     }
 
     fn run_program(&self, program: u32, input_buffer: GLuint, input_bind_idx: GLuint, output_buffer: GLuint, output_bind_idx: GLuint, x_sz: usize, out: &mut Vec<u8>, out_size: usize) {
+        let x_groups = (self.height / self.local_size_y) as u32;
+        let y_groups = (x_sz / self.local_size_y) as u32;
+        let z_groups = 1;
         unsafe {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, input_buffer); // TODO 1
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, input_bind_idx, input_buffer);
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, output_buffer);
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, output_bind_idx, output_buffer);
             glUseProgram(program);
-            glDispatchCompute((self.height / self.local_size_y) as u32, (x_sz / self.local_size_x) as u32, 1);
+            glDispatchCompute(x_groups, y_groups, z_groups);
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
             let ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, out_size as i64, GL_MAP_READ_BIT) as *const u8;
             let slice = slice::from_raw_parts(ptr, out_size);
@@ -201,7 +224,7 @@ impl Drop for GlColorConverter {
 fn gl_init() -> Result<(Display, khronos_egl::Context), Error> {
     let display = get_display(DEFAULT_DISPLAY).context("Need a display!")?;
     let res = initialize(display).context("Can't initialize")?;
-    info!("EGL version={:?}", res);
+    debug!("EGL version={:?}", res);
 
     let config = choose_first_config(display, &[khronos_egl::NONE])
         .context("unable to choose an EGL configuration")?
@@ -281,7 +304,7 @@ void main() {{\n\
                                  local_size_x = local_size_x,
                                  local_size_y = local_size_y,
     );
-    info!("y_shader={}", COMPUTE_SHADER);
+    debug!("y_shader={}", COMPUTE_SHADER);
     unsafe {
         let shader = load_shader(COMPUTE_SHADER.as_str())?;
         let program = glCreateProgram();
@@ -328,7 +351,7 @@ void main() {{\n\
                                  local_size_x = local_size_x,
                                  local_size_y = local_size_y,
     );
-    info!("uv_shader={}", COMPUTE_SHADER);
+    debug!("uv_shader={}", COMPUTE_SHADER);
     unsafe {
         let shader = load_shader(COMPUTE_SHADER.as_str())?;
         let program = glCreateProgram();
@@ -364,3 +387,92 @@ pub unsafe fn load_shader(shader_src: &str) -> Result<GLuint, Error> {
     }
     return Ok(shader);
 }
+
+#[derive(Debug,Clone)]
+struct ProfStats {
+    test_file: TestFile,
+    mean_time_ms: f64,
+    median_time_ms: f64,
+    std_dev_ms: f64,
+    min_time_ms: f64,
+    max_time_ms: f64,
+}
+
+#[derive(Debug,Clone)]
+struct TestFile {
+    dir: String,
+    name: String,
+    extension: String,
+    width: usize,
+    height: usize,
+}
+
+impl TestFile {
+    pub fn new(dir: String, name: String) -> Result<TestFile, anyhow::Error> {
+        let extension = TestFile::get_extension(&name)?.to_string();
+        let (width, height) = TestFile::get_res_from_file_path(&name)?;
+        let tf = TestFile {
+            dir,
+            name,
+            extension,
+            width,
+            height,
+        };
+        Ok(tf)
+    }
+
+    pub fn path(&self) -> String {
+        format!("{}/{}", &self.dir, &self.name)
+    }
+
+    pub fn get_test_files(dir: &String) -> Result<Vec<TestFile>, anyhow::Error> {
+        let mut test_files = vec![];
+        let files = std::fs::read_dir(dir)?;
+        for file in files {
+            if file.is_ok() {
+                let file_path = TestFile::dir_entry_to_str(&file.unwrap());
+                if file_path.is_ok() {
+                    let file_path = file_path.unwrap();
+                    info!("Found file: {}", &file_path);
+                    let test_file = TestFile::new(dir.clone(), file_path);
+                    if test_file.is_ok() {
+                        test_files.push(test_file.unwrap());
+                    }
+                }
+            }
+        }
+        Ok(test_files)
+    }
+
+    fn get_extension(file_name: &String) -> Result<&str, anyhow::Error> {
+        let ext = Path::new(file_name).extension().and_then(OsStr::to_str)
+            .ok_or(anyhow!(format!("Failed to get extension from: {}", file_name)))?;
+        Ok(ext)
+    }
+
+    // Expects format such as: 1920x1080.raw
+    fn get_res_from_file_path(file_path: &String) -> Result<(usize, usize), anyhow::Error> {
+        let re = Regex::new(r"\d{2,}x\d{2,}").unwrap();
+        let mat = re.find(file_path).ok_or(anyhow!("Failed to parse resolution from: {}", file_path))?;
+        let res_strs: Vec<&str> = mat.as_str().split('x').collect();
+        match res_strs.len() {
+            2 => {
+                let width = res_strs[0].parse::<usize>()?;
+                let height = res_strs[1].parse::<usize>()?;
+                Ok((width, height))
+            }
+            _ => Err(anyhow!(format!("Failed to get resolution from: {}", file_path)))
+        }
+    }
+
+    fn dir_entry_to_str(dir_entry: &DirEntry) -> Result<String, anyhow::Error> {
+        let entry_str = dir_entry
+            .path()
+            .file_name()
+            .ok_or(anyhow!("Bad dir entry file name"))?
+            .to_string_lossy()
+            .into_owned();
+        Ok(entry_str)
+    }
+}
+
