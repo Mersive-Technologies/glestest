@@ -41,22 +41,41 @@ pub extern fn Java_com_mersive_glconvert_MainActivity_init(
     // How many color conversion to do per test file.
     let num_runs = 100;
 
-    // This number is pretty arbitrary and is based on the adreno chip. It doesn't need to
-    // be a power of 2 or anything, we just need to make sure we correctly divy data into
-    // these work groups.
+    // The compute group count is pretty arbitrary (with a max) and is based on the adreno chip.
+    // It doesn't need to be a power of 2 or anything, we just need to make sure we correctly divy
+    // work into them.
     // I think we can just optimize it for 1080p as long as lower resolutions can still go 60fps.
-    let local_size = 32;
+    // 69 (at mean 16.4ms) was the best number I got in 2-128 work groups, but it wasn't significantly
+    // different from many other work group counts. Seems like as long as we're 8 or above, there
+    // isn't a huge differences. Some higher numbers may be consistently lower, but not by much.
 
-    let mut stats = vec![];
-    let test_files: Vec<TestFile> = TestFile::get_test_files(&path).unwrap();
-    for test_file in test_files {
-        let stat = profile_color_conversion(&test_file, num_runs, local_size).unwrap();
-        stats.push(stat);
+    let mut lowest_1080p_stat: Option<(usize, ProfStats)> = None;
+
+    let min_groups = 2;
+    let max_groups = 128;
+
+    for local_size in min_groups..=max_groups {
+        let mut stats = vec![];
+        let test_files: Vec<TestFile> = TestFile::get_test_files(&path).unwrap();
+        for test_file in test_files {
+            let stat = profile_color_conversion(&test_file, num_runs, local_size).unwrap();
+            if test_file.height == 1080 {
+                info!("1080p conversion with {} work groups: {} us", local_size, stat.mean_time_us);
+                if lowest_1080p_stat.as_ref().is_none() || lowest_1080p_stat.as_ref().unwrap().1.mean_time_us > stat.mean_time_us {
+                    // TODO: have some notion of significant difference
+                    lowest_1080p_stat = Some((local_size, stat.clone()));
+                    info!("New lowest 1080p conversion. Work groups: {}: {} us", local_size, stat.mean_time_us);
+                }
+            }
+            stats.push(stat);
+        }
+
+        for stat in stats {
+            info!("{:#?}", &stat);
+        }
     }
 
-    for stat in stats {
-        info!("{:#?}", &stat);
-    }
+    info!("Lowest 1080p work group num {}: {:#?}", lowest_1080p_stat.as_ref().unwrap().0, lowest_1080p_stat.as_ref().unwrap());
 }
 
 fn profile_color_conversion(test_file: &TestFile, num_runs: usize, local_size: usize) -> Result<ProfStats, anyhow::Error> {
